@@ -149,6 +149,59 @@ substantially, so this often resolves an over-bitrate finding at the same time.
 
 ---
 
+## Encoding for low-end Android
+
+The thresholds define what is *allowed*. This is what is *good* when the target is a
+cheap Android device, which for this app is the constraint that matters.
+
+```bash
+ffmpeg -i "<input>" \
+  -vf "scale=854:-2:flags=lanczos,fps=30,format=yuv420p" \
+  -c:v libx264 -profile:v baseline -level 3.1 -bf 0 -g 30 \
+  -b:v 700k -maxrate 1M -bufsize 1M \
+  -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
+  -an -movflags +faststart \
+  "<name>_optimised.mp4" -y
+```
+
+Each flag earns its place:
+
+- **`-profile:v baseline -level 3.1`** — the widest decoder support there is. High
+  profile is common now, but Baseline is what cheap and older decoders handle without
+  falling back to software.
+- **`-bf 0`** — no B-frames. Baseline forbids them anyway; stating it explicitly also
+  removes reorder latency, which shortens time-to-first-frame.
+- **`fps=30` with `-g 30`** — these belong together: `-g` counts *frames*, not seconds,
+  so the pair gives a keyframe every second and a loop that restarts cleanly. Leave the
+  frame rate at 60 and `-g 30` becomes every half second instead — harmless, but not
+  what it looks like. Halving the frame rate also halves per-second decode work, which
+  is the point on a weak CPU.
+- **`-an`** — drop audio outright when the source has none, or when the surface plays
+  muted. That avoids a second decoder and any audio-focus interaction. `probe.py`
+  reports `has_audio`, so check rather than guess: passing `-c:a aac` to a silent
+  source is harmless but pointless.
+- **854×480** — on a small cheap screen the extra pixels are not perceived, and the
+  decoded frame buffer drops from **3.52 MB** (720p) to **1.56 MB**. That memory, not
+  the file size, is what accumulates into crashes.
+
+**Prefer video over GIF, always.** H.264 decodes on dedicated hardware; GIF and
+animated WebP decode on the CPU into full ARGB bitmaps. Measured on the same 720p/4s
+animation: GIF 2468 KB, animated WebP 1496 KB, **MP4 720p 444 KB**, MP4 480p 296 KB —
+and only the MP4 avoids the software decode entirely.
+
+**The one case where video loses: many clips at once.** Hardware decoder instances are
+limited and device-dependent — a budget SoC may expose only a handful. Query it rather
+than assume, via `MediaCodecInfo.CodecCapabilities.getMaxSupportedInstances()`. A list
+where every card loops its own video will exhaust them, fall back to software, or fail
+outright. Fix it by playing only the visible item and showing a poster frame for the
+rest; where that is impossible, animated WebP is the lesser evil for many small loops.
+
+**For UI motion — icons, loaders, micro-interactions — use neither.** Lottie is vector,
+kilobytes, and GPU-composited. This app already supports it (`RenderMedia` detects
+Lottie), so that is the established path rather than a new dependency.
+
+---
+
 ## Batching
 
 ffprobe reads URLs directly, so remote assets need no download step. Run encodes

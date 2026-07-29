@@ -917,6 +917,61 @@ class TestFaststartOnEncodes(unittest.TestCase):
         )
 
 
+class TestReferenceCoverage(unittest.TestCase):
+    """Knowledge the skill demonstrably needs, and re-derived from scratch when the
+    reference did not carry it."""
+
+    def test_cdn_resize_by_url_is_documented(self):
+        """The cheapest fix for an oversized CDN image is no fix at all — request a
+        smaller variant. The skill reconstructed this by measuring the live CDN,
+        which means it was missing from the reference."""
+        text = (SKILL / "references" / "image-fixes.md").read_text()
+        for needle, why in (
+            ("?width=", "the resize parameter"),
+            ("quality=", "the quality parameter"),
+            ("re-upload", "that no re-upload is needed"),
+        ):
+            self.assertIn(needle, text, f"image-fixes.md should document {why}")
+
+    def test_low_end_android_targets_are_documented(self):
+        text = (SKILL / "references" / "video-fixes.md").read_text()
+        for needle, why in (
+            ("baseline", "the safest H.264 profile for cheap decoders"),
+            ("-bf 0", "disabling B-frames"),
+            ("-an", "dropping audio when the source is silent"),
+            ("getMaxSupportedInstances", "the concurrent-decoder limit"),
+        ):
+            self.assertIn(needle, text.lower() if needle.islower() else text,
+                          f"video-fixes.md should document {why}")
+
+    def test_the_documented_low_end_command_produces_baseline_no_bframes(self):
+        """Run what the reference tells people to run, and check the output really is
+        what it claims — a profile claim nobody verifies is just folklore."""
+        text = (SKILL / "references" / "video-fixes.md").read_text()
+        self.assertIn("-profile:v baseline", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=1280x720:d=1:r=60",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src))
+            out = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(src),
+                 "-vf", "scale=854:-2:flags=lanczos,format=yuv420p",
+                 "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+                 "-bf", "0", "-b:v", "700k", "-maxrate", "1M", "-bufsize", "1M",
+                 "-an", "-movflags", "+faststart", str(dst), "-y"],
+                capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            probed = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=profile,has_b_frames,width",
+                 "-of", "csv=p=0", str(dst)],
+                capture_output=True, text=True).stdout.strip()
+        self.assertIn("Baseline", probed, f"got {probed}")
+        self.assertIn("854", probed, f"got {probed}")
+        self.assertTrue(probed.endswith(",0") or ",0," in probed,
+                        f"B-frames should be 0: {probed}")
+
+
 if __name__ == "__main__":
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is required to run these tests")

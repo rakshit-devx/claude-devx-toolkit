@@ -176,6 +176,54 @@ usually redundant work.
 
 ---
 
+## Fix 7 — Oversized image already on the Shopify CDN
+
+**Check this before reaching for ffmpeg.** If the asset is served from
+`cdn.shopify.com`, the cheapest fix is usually no fix: request a smaller variant by
+URL. Nothing is re-encoded, nothing is re-uploaded, and the stored original stays
+available for surfaces that genuinely need the full size.
+
+```
+https://cdn.shopify.com/.../hero.jpg?width=430&quality=80
+```
+
+Measured against a live 1792×1792 file:
+
+| Request | Delivered | Payload |
+|---|---|---|
+| as-is | 1792×1792 | 176 KB |
+| `?width=430&quality=80` | 430×430 | **28 KB** |
+| `?width=800&quality=80` | 800×800 | 69 KB |
+| `?width=860&quality=80` (2× for retina) | 860×860 | 77 KB |
+
+The older suffix form still works — `.../hero_430x.jpg` returns 430×430 — but at 33 KB
+against 28 KB, because it gives no control over quality. Prefer the query parameters.
+
+**Shopify already negotiates WebP.** Requesting that JPG with `Accept: image/webp`
+returns `content-type: image/webp`, so uploading a WebP yourself is redundant work on
+this CDN.
+
+**Why this matters more than the byte count:** the download is the smaller half. A
+1792 px image decodes to a **12.8 MB** ARGB bitmap in memory; at 430 px it is **739
+KB**. In a grid of twenty cards that difference is the gap between a smooth scroll and
+an OOM kill on a low-end device — which is why the width rule exists separately from
+the file-size rule.
+
+**Check whether the app is already doing this** before advising anything. In this
+codebase `getOptimizedImageURL(url, resize, quality)` appends or replaces `width` and
+`quality`, and `BaseImage` applies it on delivery — so an image whose *stored*
+dimensions look oversized may be perfectly fine at the point of render. Confirm which
+surface it renders on before recommending a change.
+
+So the decision is:
+
+- **Renders through a CDN-resizing path** → nothing to do; the stored size is
+  irrelevant.
+- **Rendered at full stored size** → non-compliant, and either the surface should
+  request a width or the source needs resizing (Fix 1).
+
+---
+
 ## Verifying a fix
 
 Always re-probe rather than trusting the encode:
