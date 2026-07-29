@@ -27,16 +27,25 @@ from there, so the docs can't drift out of sync with what the script enforces.
 
 ## Changing a limit
 
-`thresholds.json` is a transcription of the published guidelines in
-[`docs/source/`](docs/source) — `image_asset_guidelines.pdf` and
-`video_asset_guidelines.png`. Those documents are the authority; the JSON is what
-actually runs.
+Two files hold the same numbers: [`docs/asset-guidelines.md`](docs/asset-guidelines.md),
+which people read and which is the authority, and `thresholds.json`, which the tooling
+enforces.
 
-So a limit change is two edits in one PR: update the source document, then update
-`thresholds.json` to match. Changing only the JSON leaves the team following a
-document the tooling contradicts, and changing only the document means nothing is
-enforced. If you cannot update the source document, say so in the PR and flag which
-value now diverges.
+Edit the markdown first, then update `thresholds.json`, then run:
+
+```bash
+python3 plugins/asset-check/skills/asset-check/scripts/verify-guidelines.py
+```
+
+It reports exactly which field disagrees and exits non-zero, so you do not have to
+remember what you missed. It checks every category's minimum, preferred range, maximum
+width, hard cap, preferred and maximum file size, and preferred format; every video
+setting; the `format_required` flag on the SVG-mandatory categories; the global width
+cap; and the mandatory-rule count.
+
+Changing only the JSON leaves the team following a document the tooling contradicts.
+Changing only the markdown means nothing is enforced. The verifier catches both, which
+is why the rule is "run the verifier" rather than "remember to update both".
 
 ## Adding a fix
 

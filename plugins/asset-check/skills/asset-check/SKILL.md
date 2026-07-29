@@ -10,10 +10,11 @@ that fail.
 
 Two things make this reliable rather than a judgement call each time:
 
-- **`references/thresholds.json` is the single source of truth.** Every limit lives
-  there, transcribed from the team's published guidelines in `docs/source/`. Do not
-  restate numbers from memory or hardcode them into commands — read them from the
-  file, or let `probe.py` apply them.
+- **`references/thresholds.json` holds every limit.** Do not restate numbers from
+  memory or hardcode them into commands — read them from the file, or let `probe.py`
+  apply them. The human-readable guidelines behind it are `docs/asset-guidelines.md`
+  at the repo root; read that when someone asks *why* a limit exists or wants the rules
+  explained rather than an asset checked.
 - **`scripts/probe.py` does the grading.** Eyeballing whether 1.9 MB is acceptable for
   a mobile banner produces different answers from different people on different days.
   The script produces the same verdict every time.

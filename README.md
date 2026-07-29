@@ -121,23 +121,26 @@ verdict changes with it.
 
 ### Source of truth
 
-`thresholds.json` is a transcription of the team's published guidelines, kept in
-[`docs/source/`](docs/source) so the provenance travels with the repo:
+The guidelines themselves live in **[`docs/asset-guidelines.md`](docs/asset-guidelines.md)**
+— the nine image categories, the six mandatory rules, the video settings table, and the
+reasoning behind them. That is the document to read and to edit.
 
-- [`image_asset_guidelines.pdf`](docs/source/image_asset_guidelines.pdf) — the nine
-  image categories, their preferred and maximum sizes, and the six mandatory rules.
-- [`video_asset_guidelines.png`](docs/source/video_asset_guidelines.png) — the video
-  settings table.
+`thresholds.json` is the machine-readable copy the tooling enforces. Rather than
+trusting people to keep the two in step, the agreement is checked mechanically:
 
-Every value in `thresholds.json` has been verified against these documents. If the
-guidelines change, update the document *and* `thresholds.json` in the same PR — the
-docs are the authority, the JSON is what runs.
+```bash
+python3 plugins/asset-check/skills/asset-check/scripts/verify-guidelines.py
+```
 
-The guidelines exist for concrete reasons, carried in `thresholds.json` under
-`global.rationale`: consistent quality across web and mobile, faster loading, **reduced
-mobile-app memory use — which is what prevents crashes and lag**, maintainable asset
-management, and efficient use of Shopify's limited storage. Quote the reason when
-asking someone to fix an asset; it lands better than a number.
+It compares every category, every video setting, and the rule count, and exits `1`
+with a precise diff if they disagree — so a drifted pair gets caught instead of
+quietly leaving the team following a document the tooling contradicts. Worth wiring
+into CI or a pre-commit hook.
+
+The reasoning matters as much as the numbers: consistent quality across web and mobile,
+faster loading, **reduced mobile-app memory use — which is what prevents crashes and
+lag**, maintainable asset management, and efficient use of Shopify's limited storage.
+Quote the reason when asking someone to fix an asset; it lands better than a number.
 
 ### What it deliberately won't do
 
