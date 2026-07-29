@@ -221,6 +221,54 @@ update.
 
 ---
 
+## Brand-specific rules
+
+The bundled thresholds are the team baseline. A brand or project can differ from it
+without editing the plugin and without a PR — tell the skill your rule and it writes it
+to `.asset-check.json` in your project, where it applies on every future run:
+
+```json
+{
+  "_comment": "Editorial heroes are shot wide; 2500 px crops the composition.",
+  "global": { "hard_max_width_px": 3000 },
+  "image_categories": {
+    "banner-desktop": { "max_width_px": 3000 },
+    "lookbook": { "max_width_px": 1200, "max_bytes": 409600, "preferred_format": "jpg" }
+  },
+  "filename_hints": { "lookbook": ["lookbook", "editorial"] },
+  "notes": "Our CDN strips EXIF on upload, so don't bother stripping it locally."
+}
+```
+
+Config layers, later winning:
+
+| Layer | Path | Scope |
+|---|---|---|
+| team | bundled `thresholds.json` | everyone — change via PR |
+| user | `~/.claude/asset-check/config.json` | you, every project |
+| project | `.asset-check.json` (found by walking up) | that repo, everyone in it |
+
+```bash
+python3 scripts/probe.py --show-config        # what's active and what it changed
+python3 scripts/probe.py --no-overrides ...   # grade against the team baseline (CI)
+```
+
+Four properties that keep this from becoming a way to quietly lower the bar:
+
+- **Overrides are always disclosed** — in the report and in `--json`. A pass reached via
+  local config never looks like a pass against the team standard.
+- **`--no-overrides` ignores them entirely**, so CI can gate on the shared baseline no
+  matter what a project set.
+- **Config that couldn't take effect is rejected**, not half-applied. Raising a category
+  above the global width cap errors out and names the global value to raise.
+- **They live outside the plugin**, so `/plugin marketplace update` can't wipe them —
+  which is exactly what happened to the older "edit my own instructions" approach.
+
+Full schema and worked examples:
+[`references/customising.md`](plugins/asset-check/skills/asset-check/references/customising.md).
+
+---
+
 ## What it deliberately won't do
 
 Each of these is a case where doing the obvious thing produces a worse asset:

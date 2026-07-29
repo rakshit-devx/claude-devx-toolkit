@@ -41,6 +41,11 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 THRESHOLDS_PATH = SKILL_DIR / "references" / "thresholds.json"
 
+# Where brand- or project-specific overrides live. Deliberately outside the plugin:
+# anything inside it is replaced wholesale by /plugin marketplace update.
+CONFIG_BASENAMES = (".asset-check.json", "asset-check.config.json")
+USER_CONFIG = Path.home() / ".claude" / "asset-check" / "config.json"
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".hevc"}
 SVG_EXTS = {".svg"}
@@ -87,11 +92,139 @@ def die(msg: str, code: int = 2) -> "None":
     raise SystemExit(code)
 
 
-def load_thresholds() -> dict:
+def deep_merge(base: dict, over: dict, prefix: str = "",
+               changed: "list | None" = None) -> dict:
+    """Recursively merge `over` into a copy of `base`, recording what changed.
+
+    Dicts merge; scalars and lists replace outright. Lists replace because a
+    partially-merged list of formats or hints is never what anyone means.
+    """
+    result = dict(base)
+    for key, value in over.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value, path + ".", changed)
+        else:
+            # Commentary is not a rule change. Counting it would inflate the override
+            # count and make the provenance line untrustworthy.
+            documentation = key.startswith("_") or key in ("notes", "$schema")
+            if changed is not None and not documentation and result.get(key) != value:
+                changed.append(path)
+            result[key] = value
+    return result
+
+
+def find_project_config(start: "Path | None" = None) -> "Path | None":
+    """Nearest config file walking up from cwd, like eslint or tsconfig.
+
+    Walking up matters because assets usually live in a subfolder; someone running
+    from `assets/banners/` should still pick up the config at their repo root.
+    """
+    here = (start or Path.cwd()).resolve()
+    for directory in (here, *here.parents):
+        for name in CONFIG_BASENAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def normalise_category(key: str, rules: dict) -> dict:
+    """Fill in the parts of a hand-written category that can be inferred.
+
+    Someone adding a brand-specific category should not have to restate every field
+    the grader happens to read, so anything derivable is derived. What cannot be
+    guessed is required, and missing it is an error rather than a silent default —
+    a category with an invented size limit would grade assets against a number
+    nobody chose.
+    """
+    rules = dict(rules)
+    for required in ("max_width_px", "max_bytes", "preferred_format"):
+        if required not in rules:
+            die(f"category '{key}' is missing required field '{required}'")
+    if isinstance(rules["preferred_format"], str):
+        rules["preferred_format"] = [rules["preferred_format"]]
+    rules.setdefault("allowed_formats", list(rules["preferred_format"]))
+    rules.setdefault("min_width_px", 0)
+    rules.setdefault("preferred_width_px",
+                     [rules["min_width_px"], rules["max_width_px"]])
+    rules.setdefault("label", key.replace("-", " ").title())
+    rules.setdefault("use_case", "custom")
+    return rules
+
+
+def load_thresholds(use_overrides: bool = True) -> tuple:
+    """Return (thresholds, sources, changed).
+
+    Layered lowest to highest: the bundled team canon, then the user's own config,
+    then the project's. The bundled file stays authoritative for the team and is the
+    one `verify-guidelines.py` checks against the guidelines doc; overrides are
+    deliberately outside that check because they are *meant* to differ.
+
+    Overrides live outside the plugin so `/plugin marketplace update` cannot wipe
+    them — which is exactly what happened to the old self-editing approach.
+    """
     if not THRESHOLDS_PATH.exists():
         die(f"thresholds.json not found at {THRESHOLDS_PATH}")
-    with THRESHOLDS_PATH.open() as fh:
-        return json.load(fh)
+    thresholds = json.loads(THRESHOLDS_PATH.read_text())
+    sources = [("team", THRESHOLDS_PATH)]
+    changed: list = []
+
+    if not use_overrides:
+        return thresholds, sources, changed
+
+    layers = []
+    if USER_CONFIG.is_file():
+        layers.append(("user", USER_CONFIG))
+    env_config = os.environ.get("ASSET_CHECK_CONFIG")
+    if env_config:
+        env_path = Path(env_config).expanduser()
+        if not env_path.is_file():
+            die(f"ASSET_CHECK_CONFIG points at a missing file: {env_path}")
+        layers.append(("env", env_path))
+    else:
+        project = find_project_config()
+        if project:
+            layers.append(("project", project))
+
+    for label, path in layers:
+        try:
+            override = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            die(f"{path} is not valid JSON: {exc}")
+        unknown = set(override) - set(thresholds) - {"$schema", "_comment", "notes"}
+        if unknown:
+            print(f"asset-check: warning: {path} has unrecognised top-level "
+                  f"key(s): {', '.join(sorted(unknown))}", file=sys.stderr)
+        thresholds = deep_merge(thresholds, override, "", changed)
+        sources.append((label, path))
+
+    for key, rules in list(thresholds.get("image_categories", {}).items()):
+        thresholds["image_categories"][key] = normalise_category(key, rules)
+
+    # The global width cap is enforced ahead of any per-category limit, so raising a
+    # category above it does nothing. Rejecting that outright beats half-applying it:
+    # the alternative is a report that fails an asset against the global cap while
+    # advising the larger category limit in the same breath.
+    global_cap = thresholds["global"]["hard_max_width_px"]
+    for key, rules in thresholds.get("image_categories", {}).items():
+        for field in ("max_width_px", "hard_max_width_px"):
+            value = rules.get(field)
+            if value and value > global_cap:
+                die(f"category '{key}' sets {field}={value}, above "
+                    f"global.hard_max_width_px={global_cap}, so it could never take "
+                    f"effect.\n  Raise the global cap too:\n"
+                    f'    {{"global": {{"hard_max_width_px": {value}}}}}\n'
+                    f"  or lower '{key}' to {global_cap} or less.")
+
+    # A value touched by two layers is still one override; listing it twice would
+    # misstate how much local config is actually in play.
+    seen, unique = set(), []
+    for path in changed:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return thresholds, sources, unique
 
 
 def human_bytes(n: "int | None") -> str:
@@ -695,8 +828,17 @@ def verdict_of(checks: list) -> str:
     return "compliant"
 
 
-def render(results: list) -> str:
+def render(results: list, sources: "list | None" = None,
+           changed: "list | None" = None) -> str:
     lines = []
+    # State the provenance up front when local rules are in play. Without it, a
+    # teammate reading "3000 px PASS" has no way to tell that this project raised the
+    # limit — they would reasonably conclude the team standard is looser than it is.
+    if changed:
+        origins = ", ".join(str(p) for label, p in (sources or []) if label != "team")
+        lines.append(f"> Grading with {len(changed)} local override(s) from "
+                     f"{origins}. Run with `--no-overrides` for the team baseline, "
+                     f"or `--show-config` to see exactly what differs.\n")
     for r in results:
         lines.append(f"### {r['asset']}")
         if r.get("error"):
@@ -735,7 +877,13 @@ def render(results: list) -> str:
 
 
 def main() -> int:
-    thresholds = load_thresholds()
+    # Parsed in two passes: the override flags decide which categories exist, and
+    # --category's choices depend on that.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--no-overrides", action="store_true")
+    known, _ = pre.parse_known_args()
+
+    thresholds, sources, changed = load_thresholds(use_overrides=not known.no_overrides)
     categories = sorted(thresholds["image_categories"])
 
     ap = argparse.ArgumentParser(
@@ -748,12 +896,36 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit JSON instead of the markdown table")
     ap.add_argument("--list-categories", action="store_true")
+    ap.add_argument("--no-overrides", action="store_true",
+                    help="ignore user and project config; grade against team "
+                         "thresholds only (use this in CI)")
+    ap.add_argument("--show-config", action="store_true",
+                    help="print which config layers are active and what they changed")
     args = ap.parse_args()
+
+    if args.show_config:
+        print("Active configuration, lowest precedence first:\n")
+        for label, path in sources:
+            print(f"  {label:8s} {path}")
+        if changed:
+            print(f"\n{len(changed)} value(s) overridden from the team defaults:")
+            for path in changed:
+                print(f"  - {path}")
+        elif len(sources) > 1:
+            print("\nNo values differ from the team defaults.")
+        else:
+            print("\nNo overrides found. Team defaults in effect.")
+            print(f"\nTo add project rules, create one of {' or '.join(CONFIG_BASENAMES)}"
+                  f"\nin your project root. For personal rules across all projects, use"
+                  f"\n{USER_CONFIG}.")
+        return 0
 
     if args.list_categories:
         for name in categories:
             rules = thresholds["image_categories"][name]
-            print(f"{name:20s} {rules['label']} — {rules['use_case']}")
+            origin = " (custom)" if any(
+                c.startswith(f"image_categories.{name}") for c in changed) else ""
+            print(f"{name:20s} {rules['label']} — {rules['use_case']}{origin}")
         return 0
 
     if not args.assets:
@@ -811,9 +983,15 @@ def main() -> int:
         })
 
     if args.as_json:
-        print(json.dumps({"results": results}, indent=2))
+        print(json.dumps({
+            "results": results,
+            "config": {
+                "sources": [{"layer": label, "path": str(path)} for label, path in sources],
+                "overridden": changed,
+            },
+        }, indent=2))
     else:
-        print(render(results))
+        print(render(results, sources, changed))
     return worst
 
 

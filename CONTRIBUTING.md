@@ -10,6 +10,26 @@ whenever the marketplace updates. Editing `SKILL.md` or `thresholds.json` there 
 invisible to teammates and disappears on the next `/plugin marketplace update`. Always
 change the repo.
 
+## Is this a PR at all?
+
+Not every rule belongs here. A brand or project that legitimately differs from the
+baseline should use a local `.asset-check.json` override — see
+[`references/customising.md`](plugins/asset-check/skills/asset-check/references/customising.md).
+That needs no review and survives plugin updates.
+
+Open a PR when the change is a **shared truth**:
+
+| Situation | Where |
+|---|---|
+| Our brand needs a wider hero than the standard | local override |
+| An asset type only this project has | local override |
+| The team number is simply wrong | **PR** |
+| A working fix for a failure mode others will hit | **PR** |
+| Three repos now carry the same override | **PR** — the baseline is wrong |
+
+That last row is the signal worth watching. Repeated identical overrides mean the
+baseline has drifted from reality, and adding a fourth copy is not the fix.
+
 ## Where a change belongs
 
 | Change | Edit |

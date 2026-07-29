@@ -174,6 +174,67 @@ obviously wrong on a phone, which is how they reached production in the first pl
 
 ---
 
+## Brand and project specific rules
+
+The bundled thresholds are the team baseline. A brand, sub-brand, or project often has
+legitimate reasons to differ — wider editorial art, a tighter size budget for a
+performance-critical surface, an asset type the baseline has no category for.
+
+**When someone tells you a rule that isn't in the baseline, persist it.** A rule you
+only remember for the rest of the conversation is a rule they have to repeat next week.
+Write it to `.asset-check.json` in their project root and `probe.py` picks it up on
+every future run, for them and for anyone else working in that repo:
+
+```json
+{
+  "_comment": "Why these differ from the team baseline — write this down, the next
+               person will ask.",
+  "global": { "hard_max_width_px": 3000 },
+  "image_categories": {
+    "banner-desktop": { "max_width_px": 3000 },
+    "lookbook": { "max_width_px": 1200, "max_bytes": 409600, "preferred_format": "jpg" }
+  },
+  "filename_hints": { "lookbook": ["lookbook", "editorial"] },
+  "notes": "Practices that aren't thresholds. Read these back before advising."
+}
+```
+
+Then confirm it applied:
+
+```bash
+python3 "$SKILL/scripts/probe.py" --show-config
+```
+
+Things worth knowing so this behaves predictably:
+
+- **Layering** is team baseline → `~/.claude/asset-check/config.json` (that person,
+  every project) → the project's `.asset-check.json` (that repo, everyone). Later
+  layers win. Use the user layer for a personal preference, the project layer for a
+  brand rule — a brand rule belongs to the repo, not to whoever happened to set it up.
+- **These files sit outside the plugin on purpose.** Anything inside it is replaced by
+  `/plugin marketplace update`, which is exactly how the previous
+  edit-my-own-instructions approach lost everything it learned.
+- **A new category needs a `filename_hints` entry** to be inferred automatically;
+  otherwise it is only reachable via `--category`.
+- **Raising a category above `global.hard_max_width_px` is rejected**, because the
+  global cap is checked first and the override could never take effect. The error says
+  which global value to raise.
+- **Overrides are disclosed** in every report and in `--json`. Don't suppress that: a
+  reader who sees a pass needs to know whether it met the team standard or a local one.
+- **`--no-overrides` grades against the team baseline** regardless of local config.
+  That's the right flag for CI, and the right way to answer "would this pass for
+  everyone, not just us?"
+
+**Not everything belongs in local config.** If the rule is a team-wide truth — a
+genuine correction to the shared standard, or a fix that would help everyone — that is
+a PR against the toolkit repo, not a local override. Local config is for legitimate
+difference; the repo is for shared truth. When it's ambiguous, ask which they mean
+rather than quietly choosing.
+
+Full schema and worked examples: `references/customising.md`.
+
+---
+
 ## Adding a new fix
 
 When you hit and solve a failure mode that isn't documented here, it belongs in the

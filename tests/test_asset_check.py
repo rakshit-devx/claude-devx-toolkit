@@ -347,6 +347,165 @@ class TestUsabilityRegressions(unittest.TestCase):
         )
 
 
+# --------------------------------------------------------------------------
+# Brand / project overrides. These must survive `/plugin marketplace update`,
+# which is why they live outside the plugin rather than editing it in place.
+# --------------------------------------------------------------------------
+class TestBrandOverrides(unittest.TestCase):
+    PROBE = SCRIPTS / "probe.py"
+
+    def _run(self, *args, cwd=None, env=None):
+        e = dict(os.environ)
+        # Neutralise any real user config so results don't depend on this machine.
+        e["HOME"] = cwd or tempfile.gettempdir()
+        e.pop("ASSET_CHECK_CONFIG", None)
+        if env:
+            e.update(env)
+        return subprocess.run([sys.executable, str(self.PROBE), *args],
+                              capture_output=True, text=True, cwd=cwd, env=e)
+
+    def _project(self, tmp: str, config: dict) -> Path:
+        root = Path(tmp)
+        (root / ".asset-check.json").write_text(json.dumps(config))
+        img = root / "hero-banner.jpg"
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=2600x1000:d=1:r=1",
+               "-frames:v", "1", str(img))
+        return img
+
+    def test_project_config_changes_the_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._project(tmp, {
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            out = self._run(str(img), cwd=tmp)
+        self.assertIn("**Compliant**", out.stdout,
+                      f"project override did not apply:\n{out.stdout}{out.stderr}")
+
+    def test_override_is_disclosed_in_the_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._project(tmp, {
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            out = self._run(str(img), cwd=tmp)
+        self.assertIn("local override", out.stdout,
+                      "a verdict reached via local config must say so, or a reader "
+                      "cannot tell it from the team standard")
+
+    def test_no_overrides_restores_the_team_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._project(tmp, {
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            out = self._run("--no-overrides", str(img), cwd=tmp)
+        self.assertIn("Non-compliant", out.stdout,
+                      "--no-overrides must ignore local config so CI can gate on the "
+                      "team standard regardless of what a project set")
+
+    def test_custom_category_resolves_from_its_filename_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".asset-check.json").write_text(json.dumps({
+                "image_categories": {"lookbook": {
+                    "max_width_px": 1200, "max_bytes": 409600,
+                    "preferred_format": "jpg"}},
+                "filename_hints": {"lookbook": ["lookbook"]},
+            }))
+            img = Path(tmp) / "lookbook-spread.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=900x600:d=1:r=1",
+                   "-frames:v", "1", str(img))
+            out = self._run(str(img), cwd=tmp)
+        self.assertIn("category: `lookbook`", out.stdout,
+                      f"custom category not picked up:\n{out.stdout}{out.stderr}")
+        self.assertIn("**Compliant**", out.stdout)
+
+    def test_category_above_global_cap_is_rejected(self):
+        """Silently-ineffective config is worse than none: the global cap is checked
+        first, so a higher category limit would never apply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._project(tmp, {
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            out = self._run(str(img), cwd=tmp)
+        self.assertEqual(out.returncode, 2, out.stdout)
+        self.assertIn("could never take effect", out.stderr)
+        self.assertIn("hard_max_width_px", out.stderr,
+                      "the error should name the fix, not just the problem")
+
+    def test_malformed_config_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".asset-check.json").write_text("{ not json")
+            img = Path(tmp) / "x.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=100x100:d=1:r=1",
+                   "-frames:v", "1", str(img))
+            out = self._run(str(img), cwd=tmp)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("not valid JSON", out.stderr)
+
+    def test_config_is_found_from_a_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._project(tmp, {
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            deep = Path(tmp) / "assets" / "banners"
+            deep.mkdir(parents=True)
+            img = deep / "hero-banner.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=2600x1000:d=1:r=1",
+                   "-frames:v", "1", str(img))
+            out = self._run("hero-banner.jpg", cwd=str(deep))
+        self.assertIn("**Compliant**", out.stdout,
+                      "config should be found by walking up, since assets usually "
+                      "live in a subfolder")
+
+    def test_comment_keys_are_not_counted_as_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._project(tmp, {"_comment": "brand notes", "notes": "more notes"})
+            out = self._run("--show-config", cwd=tmp)
+        self.assertIn("No values differ", out.stdout,
+                      f"documentation keys must not count as rule changes:\n{out.stdout}")
+
+    def test_env_var_config_is_honoured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "brand.json"
+            cfg.write_text(json.dumps({
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            }))
+            img = Path(tmp) / "hero-banner.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=2600x1000:d=1:r=1",
+                   "-frames:v", "1", str(img))
+            out = self._run(str(img), cwd=tmp,
+                            env={"ASSET_CHECK_CONFIG": str(cfg)})
+        self.assertIn("**Compliant**", out.stdout, out.stdout + out.stderr)
+
+    def test_json_output_reports_config_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._project(tmp, {
+                "global": {"hard_max_width_px": 3000},
+                "image_categories": {"banner-desktop": {"max_width_px": 3000}},
+            })
+            out = self._run("--json", str(img), cwd=tmp)
+        data = json.loads(out.stdout)
+        self.assertIn("config", data)
+        self.assertIn("global.hard_max_width_px", data["config"]["overridden"])
+        self.assertEqual([s["layer"] for s in data["config"]["sources"]],
+                         ["team", "project"])
+
+    def test_overrides_do_not_affect_the_guidelines_verifier(self):
+        """The bundled thresholds remain the team contract; a local override must not
+        make verify-guidelines think the doc and JSON disagree."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".asset-check.json").write_text(json.dumps({
+                "global": {"hard_max_width_px": 9000}}))
+            out = subprocess.run(
+                [sys.executable, str(SCRIPTS / "verify-guidelines.py")],
+                capture_output=True, text=True, cwd=tmp,
+            )
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+
 if __name__ == "__main__":
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is required to run these tests")
