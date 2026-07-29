@@ -11,8 +11,9 @@ that fail.
 Two things make this reliable rather than a judgement call each time:
 
 - **`references/thresholds.json` is the single source of truth.** Every limit lives
-  there. Do not restate numbers from memory or hardcode them into commands — read
-  them from the file, or let `probe.py` apply them.
+  there, transcribed from the team's published guidelines in `docs/source/`. Do not
+  restate numbers from memory or hardcode them into commands — read them from the
+  file, or let `probe.py` apply them.
 - **`scripts/probe.py` does the grading.** Eyeballing whether 1.9 MB is acceptable for
   a mobile banner produces different answers from different people on different days.
   The script produces the same verdict every time.
@@ -81,6 +82,12 @@ Then state the verdict per asset:
 - **Compliant, with warnings** — within limits but not ideal. Say what and why; do not
   push a fix the rules don't require.
 - **Non-compliant** — name each failing check and what it needs.
+
+When you ask someone to change an asset, give the reason alongside the number.
+`global.rationale` in `thresholds.json` has them: quality consistency across web and
+mobile, load performance, **mobile-app memory pressure — the direct cause of crashes
+and lag**, maintainability, and Shopify's limited storage. "This 3 MB banner will push
+app memory up on low-end devices" gets acted on; "this exceeds 1 MB" gets argued with.
 
 Call out anything marked **not auto-fixable** explicitly, because these need a person,
 not a command:

@@ -116,8 +116,28 @@ and container. Every video limit is a maximum; lower is always fine.
 
 All limits live in
 [`plugins/asset-check/skills/asset-check/references/thresholds.json`](plugins/asset-check/skills/asset-check/references/thresholds.json).
-That file is the single source of truth — change a number there and every teammate's
+That file is what the tooling enforces — change a number there and every teammate's
 verdict changes with it.
+
+### Source of truth
+
+`thresholds.json` is a transcription of the team's published guidelines, kept in
+[`docs/source/`](docs/source) so the provenance travels with the repo:
+
+- [`image_asset_guidelines.pdf`](docs/source/image_asset_guidelines.pdf) — the nine
+  image categories, their preferred and maximum sizes, and the six mandatory rules.
+- [`video_asset_guidelines.png`](docs/source/video_asset_guidelines.png) — the video
+  settings table.
+
+Every value in `thresholds.json` has been verified against these documents. If the
+guidelines change, update the document *and* `thresholds.json` in the same PR — the
+docs are the authority, the JSON is what runs.
+
+The guidelines exist for concrete reasons, carried in `thresholds.json` under
+`global.rationale`: consistent quality across web and mobile, faster loading, **reduced
+mobile-app memory use — which is what prevents crashes and lag**, maintainable asset
+management, and efficient use of Shopify's limited storage. Quote the reason when
+asking someone to fix an asset; it lands better than a number.
 
 ### What it deliberately won't do
 

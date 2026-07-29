@@ -25,6 +25,19 @@ Paths are under `plugins/asset-check/skills/asset-check/`.
 Never restate a threshold in prose. Numbers live in `thresholds.json` and are read
 from there, so the docs can't drift out of sync with what the script enforces.
 
+## Changing a limit
+
+`thresholds.json` is a transcription of the published guidelines in
+[`docs/source/`](docs/source) — `image_asset_guidelines.pdf` and
+`video_asset_guidelines.png`. Those documents are the authority; the JSON is what
+actually runs.
+
+So a limit change is two edits in one PR: update the source document, then update
+`thresholds.json` to match. Changing only the JSON leaves the team following a
+document the tooling contradicts, and changing only the document means nothing is
+enforced. If you cannot update the source document, say so in the PR and flag which
+value now diverges.
+
 ## Adding a fix
 
 Add an `### Issue N` block to the relevant fixes file with four parts:

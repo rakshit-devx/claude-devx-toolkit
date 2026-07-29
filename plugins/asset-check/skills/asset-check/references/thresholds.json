@@ -12,7 +12,16 @@
       "Keep files under 1 MB, but never buy that by crushing quality. Resize first, compress second.",
       "Never exceed 2500 px wide.",
       "Ship separate mobile and desktop banners — one shared file is wrong for both."
-    ]
+    ],
+    "_rationale_comment": "Why the limits exist. Quote these when explaining a failure — people comply with a reason far more readily than with a number.",
+    "rationale": [
+      "Consistent visual quality across web and mobile — no pixelation or blur.",
+      "Faster loading and better app/web performance.",
+      "Reduced memory usage in the mobile app — this is what avoids crashes and lag.",
+      "Cleaner, more maintainable asset management.",
+      "Efficient use of storage — Shopify storage is limited and easily overused."
+    ],
+    "source": "docs/source/image_asset_guidelines.pdf and docs/source/video_asset_guidelines.png"
   },
 
   "image_categories": {
