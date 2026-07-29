@@ -1,90 +1,155 @@
+<div align="center">
+
 # claude-devx-toolkit
 
-Shared [Claude Code](https://claude.com/claude-code) plugins for the Foxtale
-engineering and design team.
+**Shared [Claude Code](https://claude.com/claude-code) plugins for the Foxtale team.**
 
-| Plugin | What it does |
-|---|---|
-| **asset-check** | Grades image and video assets against the team's compliance rules and optimises the ones that fail. |
+Stop shipping 3 MB banners and videos that crash the app — installed with two commands.
+
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6C4CF1)](https://claude.com/claude-code)
+[![Requires ffmpeg](https://img.shields.io/badge/requires-ffmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
+[![Python stdlib only](https://img.shields.io/badge/python-stdlib%20only-3776AB?logo=python&logoColor=white)](#requirements)
+[![Cross-platform](https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20WSL-supported-informational)](#requirements)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+
+</div>
 
 ---
 
-## Install
+## What's in the box
 
-Add the marketplace, then install the plugin:
+| Plugin | What it does | Entry points |
+|---|---|---|
+| **`asset-check`** | Grades image and video assets against the team's published guidelines, then optimises the ones that fail. Catches oversized banners, raster icons that should be SVG, HDR/HEVC video that crashes the mobile app, and full-range colour that renders washed out on device. | auto-triggering skill · `/asset-check` · standalone CLI |
+
+More plugins drop in as extra folders under `plugins/` — teammates pick them up with
+`/plugin marketplace update`, with no re-onboarding.
+
+---
+
+## Quickstart
+
+**1. Install ffmpeg** (once per machine — the only hard dependency)
+
+```bash
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Debian / Ubuntu
+```
+
+**2. Add the marketplace** (once per machine)
 
 ```
-/plugin marketplace add <owner>/claude-devx-toolkit
+/plugin marketplace add foxtale-data-product/claude-devx-toolkit
+```
+
+> Not published yet — until then, point it at your local clone:
+> `/plugin marketplace add /Users/you/projects/claude-devx-toolkit`
+
+**3. Install the plugin** (once per machine)
+
+```
 /plugin install asset-check@claude-devx-toolkit
 ```
 
-> Replace `<owner>/claude-devx-toolkit` with the repo path once this is pushed. Until
-> then, add it from a local clone:
->
-> ```
-> /plugin marketplace add /absolute/path/to/claude-devx-toolkit
-> ```
-
-Verify it landed:
+**4. Use it** — just describe the problem, no command needed
 
 ```
-/plugin
+these banners look heavy, can you check them before I upload
 ```
 
-`asset-check` should appear as installed, exposing both the auto-triggering skill and
-the `/asset-check` command.
+Confirm it landed with `/plugin` — `asset-check` should be listed as installed.
 
 ---
 
-## Requirements
+## Try it in 30 seconds
 
-`asset-check` needs **ffmpeg**, **ffprobe**, and **python3**. Nothing else, and no
-`pip install` — the probe script is stdlib only.
-
-```bash
-# macOS
-brew install ffmpeg
-
-# Debian / Ubuntu
-sudo apt install ffmpeg
-
-# Fedora
-sudo dnf install ffmpeg
-
-# Windows
-winget install Gyan.FFmpeg     # or work inside WSL
-```
-
-Optional extras — **ImageMagick** for marginally better image resampling, **cwebp**
-for WebP output. Neither is required; ffmpeg covers resize, recompression, and
-PNG→JPG flattening on its own.
+No assets to hand? Generate a deliberately non-compliant pair and watch it get caught:
 
 ```bash
-brew install imagemagick webp          # macOS
-sudo apt install imagemagick webp      # Debian / Ubuntu
+cd plugins/asset-check/skills/asset-check
+
+# a 2600 px banner (over the global width cap) and a 4K HDR video
+ffmpeg -f lavfi -i "testsrc=size=2600x1000:d=1:r=1" -frames:v 1 hero-banner.jpg -y
+ffmpeg -f lavfi -i "testsrc=size=3840x2160:d=1:r=30" -c:v libx264 -pix_fmt yuv420p \
+  -colorspace bt2020nc -color_primaries bt2020 -color_trc arib-std-b67 hdr-4k.mp4 -y
+
+python3 scripts/probe.py hero-banner.jpg hdr-4k.mp4
 ```
 
-Check your machine at any time:
-
-```bash
-bash plugins/asset-check/skills/asset-check/scripts/check-deps.sh
 ```
+### hero-banner.jpg
+kind: `image` · category: `banner-desktop`
 
-Note that many ffmpeg builds — including current Homebrew — ship **without** the WebP
-encoder. The dep check reports this, and WebP output routes through `cwebp` instead.
+| Check     | Requirement             | Actual  | Status |
+|-----------|-------------------------|---------|--------|
+| Width     | <= 2500 px (global cap) | 2600 px | FAIL   |
+| File size | <= 1.00 MB              | 81 KB   | PASS   |
+| Format    | JPG                     | JPG     | PASS   |
+
+**Non-compliant**
+- Width: Resize down to 2500 px.
+```
 
 ---
 
-## Using asset-check
+## Two layers, like any good toolkit
 
-It triggers on its own when you mention assets. All of these work:
+```mermaid
+flowchart LR
+    subgraph M["Machinery — installed, shared, not edited"]
+        S["skill<br/>auto-triggers"]
+        C["/asset-check<br/>explicit"]
+        P["probe.py<br/>grades"]
+    end
+    subgraph T["Truth — reviewed, versioned, yours"]
+        D["docs/asset-guidelines.md<br/>the authority"]
+        J["thresholds.json<br/>what runs"]
+    end
+    D -- "verify-guidelines.py<br/>asserts they agree" --> J
+    J --> P
+    S --> P
+    C --> P
+```
 
-- "check these banners before I upload them"
-- "this hero image is 3 MB, can you sort it out"
-- "why does this video look washed out on the phone"
-- "what size should a mobile banner be"
+**Machinery** is the same for everyone and updates centrally — you never edit the
+installed copy. **Truth** is the guidelines: a markdown document your team owns, plus
+the JSON the tooling enforces, held in sync by a script rather than by discipline.
 
-Or invoke it explicitly:
+---
+
+## How a check runs
+
+```mermaid
+flowchart TD
+    A["asset path or URL"] --> B["detect kind<br/>image · svg · video"]
+    B --> C["probe<br/>ffprobe, or XML for SVG"]
+    C --> D["grade against thresholds.json"]
+    D --> E{verdict}
+    E -->|compliant| F["done"]
+    E -->|warnings| G["report, no action required"]
+    E -->|non-compliant| H{auto-fixable?}
+    H -->|no| I["route to a human<br/>needs a bigger source, or a vector"]
+    H -->|yes| J["ask first, then encode<br/>to *_optimised.*"]
+    J --> K["re-probe to confirm"]
+```
+
+The **ask first** step is deliberate. Optimisation writes files and trades quality for
+size — that call belongs to whoever owns the asset, not to the tool.
+
+---
+
+## Usage
+
+### It triggers on its own
+
+No command to remember. All of these reach it:
+
+- *"check these banners before I upload them"*
+- *"this hero image is 3 MB, can you sort it out"*
+- *"why does this video look washed out on the phone"*
+- *"what size should a mobile banner be"*
+
+### Or call it explicitly
 
 ```
 /asset-check ./assets/hero-banner.jpg
@@ -92,65 +157,139 @@ Or invoke it explicitly:
 /asset-check                      # checks recently added assets
 ```
 
-You can also run the grader directly, without Claude:
+### Or skip Claude entirely
+
+`probe.py` is a normal CLI with no dependencies beyond ffmpeg:
 
 ```bash
 cd plugins/asset-check/skills/asset-check
-python3 scripts/probe.py ~/Downloads/hero-banner.jpg
-python3 scripts/probe.py --json ~/Downloads/*.jpg
+
+python3 scripts/probe.py ~/Downloads/hero.jpg          # one asset
+python3 scripts/probe.py ~/Downloads/*.jpg ~/*.mp4     # mixed, in one pass
+python3 scripts/probe.py --category logo brand.png     # force a category
+python3 scripts/probe.py --json assets/*               # machine-readable
 python3 scripts/probe.py --list-categories
 ```
 
-Exit codes are `0` compliant, `1` non-compliant, `2` probe failed — so it drops into
-CI or a pre-commit hook as-is.
+| Exit code | Meaning |
+|---|---|
+| `0` | every asset compliant |
+| `1` | at least one non-compliant |
+| `2` | a probe failed — missing file, bad extension, unreadable asset |
 
-### What it checks
+Which makes it easy to gate CI or a pre-commit hook:
 
-**Images** — width against per-category minimums and maximums, file size, and format.
-Nine categories (product image, thumbnail, desktop/mobile banner, background, UI and
-illustrative icons, logo, misc), inferred from the filename or forced with
-`--category`.
+```bash
+assets=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -iE '\.(jpg|jpeg|png|webp|svg|mp4|mov)$' || true)
 
-**Video** — resolution, codec, bitrate, frame rate, pixel format, colour space, HDR,
-and container. Every video limit is a maximum; lower is always fine.
+# Guard the empty case: probe.py exits 2 when given no arguments, so an
+# unguarded call would fail every commit that touches no assets.
+[ -z "$assets" ] || python3 scripts/probe.py $assets
+```
 
-All limits live in
-[`plugins/asset-check/skills/asset-check/references/thresholds.json`](plugins/asset-check/skills/asset-check/references/thresholds.json).
-That file is what the tooling enforces — change a number there and every teammate's
-verdict changes with it.
+---
 
-### Source of truth
+## What it checks
 
-The guidelines themselves live in **[`docs/asset-guidelines.md`](docs/asset-guidelines.md)**
-— the nine image categories, the six mandatory rules, the video settings table, and the
-reasoning behind them. That is the document to read and to edit.
+**Images** — width against a per-category minimum *and* maximum, file size, and format.
+Categories are inferred from the filename, or forced with `--category`:
 
-`thresholds.json` is the machine-readable copy the tooling enforces. Rather than
-trusting people to keep the two in step, the agreement is checked mechanically:
+| Key | Use case |
+|---|---|
+| `product-image` | PDP main / zoom |
+| `product-thumbnail` | Listing / grid |
+| `banner-desktop` | Collection, homepage, promo banners |
+| `banner-mobile` | Mobile banners, all types |
+| `background` | Section backgrounds |
+| `icon-ui` | Buttons, small icons |
+| `icon-illustrative` | Feature icons |
+| `logo` | Brand logos |
+| `misc` | Anything else |
+
+**Video** — resolution, codec, bitrate, frame rate, pixel format, colour space, HDR, and
+container. Every video limit is a maximum; lower is always fine.
+
+**The actual numbers live in one place: [`docs/asset-guidelines.md`](docs/asset-guidelines.md).**
+They are deliberately not repeated here — a third copy is a third thing to forget to
+update.
+
+---
+
+## What it deliberately won't do
+
+Each of these is a case where doing the obvious thing produces a worse asset:
+
+| It won't | Because |
+|---|---|
+| **Upscale** an undersized image | That is the specific thing the minimums exist to prevent. Reported as non-compliant and *not auto-fixable* — it needs a larger source. |
+| **Vectorise** a raster icon or logo | Nothing can turn a PNG into a real SVG. Auto-tracing looks worse than the PNG did, so it asks for the vector instead. |
+| **Tone map** HDR video | It desaturates badly and is irreversible. HDR is scaled and retagged to bt709, which preserves the original colour — HLG is already SDR-compatible, only the metadata is wrong. |
+| **Compress** its way out of a size problem | An oversized image is oversized because of its *dimensions*. It resizes first, then compresses. |
+| **Overwrite** your originals | Output always goes to `<name>_optimised.<ext>`. The original is the only thing a retry can start from. |
+
+---
+
+## Requirements
+
+**Required:** `ffmpeg`, `ffprobe`, `python3`. That's it — no `pip install`, the scripts are
+stdlib only.
+
+**Optional:** ImageMagick for marginally better resampling, `cwebp` for WebP output.
+Neither is required; ffmpeg covers resize, recompression and PNG→JPG flattening on its
+own.
+
+```bash
+brew install imagemagick webp          # macOS
+sudo apt install imagemagick webp      # Debian / Ubuntu
+```
+
+Check any machine:
+
+```bash
+bash plugins/asset-check/skills/asset-check/scripts/check-deps.sh
+```
+
+```
+  ffprobe      present        ffprobe version 8.1
+  ffmpeg       present        ffmpeg version 8.1
+  python3      present        Python 3.13.7
+
+  ImageMagick  absent         optional — ffmpeg handles resize/compress/flatten instead
+  cwebp        present        WebP encoding available
+  ffmpeg webp  absent         this ffmpeg build cannot write WebP — use cwebp
+```
+
+> Many ffmpeg builds — current Homebrew included — ship **without** the WebP encoder.
+> The dep check detects this, and WebP output routes through `cwebp`.
+
+No macOS-only tools are used, so this works the same on Linux and WSL.
+
+---
+
+## Source of truth
+
+[`docs/asset-guidelines.md`](docs/asset-guidelines.md) is the **human-readable
+authority** — the categories, the mandatory rules, the video table, and the reasoning
+behind each. `thresholds.json` is the machine-readable copy the tooling enforces.
+
+Rather than trusting anyone to keep two files in step, the agreement is checked:
 
 ```bash
 python3 plugins/asset-check/skills/asset-check/scripts/verify-guidelines.py
+# thresholds.json matches docs/asset-guidelines.md (9 image categories, 8 video settings, 6 mandatory rules)
 ```
 
-It compares every category, every video setting, and the rule count, and exits `1`
-with a precise diff if they disagree — so a drifted pair gets caught instead of
-quietly leaving the team following a document the tooling contradicts. Worth wiring
-into CI or a pre-commit hook.
+It compares every category's minimum, preferred range, maximum width, hard cap,
+preferred and maximum file size and format; every video setting; the mandatory-rule
+count; and the global caps — exiting `1` with a precise diff on any mismatch. Worth
+wiring into CI.
 
-The reasoning matters as much as the numbers: consistent quality across web and mobile,
-faster loading, **reduced mobile-app memory use — which is what prevents crashes and
-lag**, maintainable asset management, and efficient use of Shopify's limited storage.
-Quote the reason when asking someone to fix an asset; it lands better than a number.
-
-### What it deliberately won't do
-
-- **Upscale.** An image below its category minimum is reported as non-compliant and
-  not auto-fixable. Upscaling is what the rules exist to prevent.
-- **Vectorise a raster icon.** Nothing can turn a PNG logo into a real SVG;
-  auto-tracing looks worse than the PNG. It tells you to get the vector source.
-- **Tone map HDR.** It desaturates badly and is irreversible. HDR video is scaled and
-  retagged to bt709 instead, which preserves the original colour.
-- **Overwrite your originals.** Output always goes to `<name>_optimised.<ext>`.
+**Why the limits exist** matters as much as the limits: consistent quality across web
+and mobile, faster loading, **lower mobile-app memory use — the direct cause of the
+crashes and lag these rules prevent**, maintainable asset management, and efficient use
+of Shopify's limited storage. Quote the reason when asking someone to change an asset;
+it lands better than a number.
 
 ---
 
@@ -159,55 +298,123 @@ Quote the reason when asking someone to fix an asset; it lands better than a num
 ```
 claude-devx-toolkit/
 ├── .claude-plugin/
-│   └── marketplace.json           # marketplace manifest — lists the plugins
+│   └── marketplace.json              # marketplace manifest — lists the plugins
+├── docs/
+│   └── asset-guidelines.md           # ← the guidelines (authority)
 ├── plugins/
 │   └── asset-check/
-│       ├── .claude-plugin/
-│       │   └── plugin.json
+│       ├── .claude-plugin/plugin.json
 │       ├── commands/
-│       │   └── asset-check.md     # /asset-check
-│       └── skills/
-│           └── asset-check/
-│               ├── SKILL.md       # workflow (auto-triggering)
-│               ├── references/
-│               │   ├── thresholds.json    # all limits
-│               │   ├── image-fixes.md
-│               │   └── video-fixes.md
-│               └── scripts/
-│                   ├── probe.py           # probe + grade
-│                   └── check-deps.sh
+│       │   └── asset-check.md        # /asset-check
+│       └── skills/asset-check/
+│           ├── SKILL.md              # workflow (auto-triggering)
+│           ├── references/
+│           │   ├── thresholds.json   # ← the limits (enforced)
+│           │   ├── image-fixes.md    # resize, recompress, PNG→JPG, WebP
+│           │   └── video-fixes.md    # bitrate, full-range, HDR, HEVC, remux
+│           └── scripts/
+│               ├── probe.py              # probe + grade
+│               ├── check-deps.sh         # dependency preflight
+│               └── verify-guidelines.py  # doc ↔ JSON drift check
 ├── CONTRIBUTING.md
 └── README.md
 ```
 
-Adding another plugin later means a new folder under `plugins/` and an entry in
-`marketplace.json` — teammates get it via `/plugin marketplace update`, with no
-re-onboarding.
+---
+
+## Updating
+
+**As a user** — pull the latest plugins:
+
+```
+/plugin marketplace update claude-devx-toolkit
+```
+
+**As a maintainer** — bump `version` in *both* `.claude-plugin/marketplace.json` and
+`plugins/asset-check/.claude-plugin/plugin.json`, then merge. `claude plugin tag`
+validates that the two agree before you cut a release.
 
 ---
 
-## Publishing
+## FAQ
 
-This repo is local for now. To make it available to the team:
+<details>
+<summary><strong>Do I need ImageMagick?</strong></summary><br>
 
-```bash
-cd claude-devx-toolkit
+No. Every image fix has a working ffmpeg path — resize, recompress, and PNG→JPG
+flattening included. ImageMagick is a nice-to-have for slightly better resampling.
+</details>
 
-# private to the org (recommended — these are internal standards)
-gh repo create foxtale-data-product/claude-devx-toolkit --private --source=. --push
+<details>
+<summary><strong>It didn't trigger automatically.</strong></summary><br>
 
-# or public
-gh repo create foxtale-data-product/claude-devx-toolkit --public --source=. --push
-```
+Use `/asset-check` explicitly. If the name collides with another command — a personal
+one in `~/.claude/commands/`, say — the namespaced form always resolves to this plugin:
+`/asset-check:asset-check`.
+</details>
 
-Then update the install snippet above with the real repo path and share it. Teammates
-need read access to the repo; `/plugin marketplace add` uses their own git
-credentials.
+<details>
+<summary><strong>Will it overwrite my assets?</strong></summary><br>
+
+No. Output goes to `<name>_optimised.<ext>` alongside the original, and it asks before
+encoding anything.
+</details>
+
+<details>
+<summary><strong>My icon is fine but it failed on format.</strong></summary><br>
+
+SVG is mandatory for icons and logos, not merely preferred, so a PNG icon fails even at
+a perfect size. It is marked *not auto-fixable* because auto-tracing a raster to SVG
+produces worse output than the PNG — ask the designer for the vector, which will exist
+in the source file.
+</details>
+
+<details>
+<summary><strong>My 1080p video got flagged.</strong></summary><br>
+
+As a **warning**, not a failure — 1080p is within limits, 720p is simply lighter. No
+action needed. Warnings never make an asset non-compliant.
+</details>
+
+<details>
+<summary><strong>How do I change a limit?</strong></summary><br>
+
+Edit [`docs/asset-guidelines.md`](docs/asset-guidelines.md), update `thresholds.json`,
+then run `verify-guidelines.py` — it tells you precisely what still disagrees. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+</details>
+
+<details>
+<summary><strong>Can I run it without Claude?</strong></summary><br>
+
+Yes — `probe.py` is a plain CLI with meaningful exit codes. See
+[Usage](#or-skip-claude-entirely).
+</details>
+
+<details>
+<summary><strong>Making the repo private — does anything change?</strong></summary><br>
+
+No. The install commands are identical; `/plugin marketplace add` uses each teammate's
+own git credentials, so they just need read access to the repo.
+</details>
 
 ---
 
 ## Contributing
 
-Fixes and threshold changes go through a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
-Editing an installed plugin in place does nothing: the cache is overwritten on update
-and nobody else sees the change.
+Fixes, new categories, and threshold changes go through a PR — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+Editing an *installed* plugin does nothing: the cache is overwritten on the next update
+and no teammate ever sees the change. The repo is the only place a fix survives.
+
+## Publishing
+
+```bash
+cd claude-devx-toolkit
+gh repo create foxtale-data-product/claude-devx-toolkit --private --source=. --push
+```
+
+Then swap the placeholder in [Quickstart](#quickstart) for the real repo path.
+
+<div align="center"><sub>MIT · Foxtale DevX</sub></div>
