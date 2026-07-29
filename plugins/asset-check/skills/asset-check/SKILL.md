@@ -87,6 +87,17 @@ behind an unreadable file in the same run.
   verdict and the name is ambiguous, ask rather than assume — grading a thumbnail as
   a product image demands 1400 px of a 400 px file and produces a nonsense failure.
 
+**`category: misc (fallback — no filename hint matched)` needs your attention.** It
+means nothing matched, and `misc` has the loosest limits of any category, so a pass
+there is the weakest pass the tool can give. This is common with CDN filenames, which
+rarely contain `product`, `thumb` or `banner` — a 1792 px grid thumbnail sails through
+`misc` while failing badly as `product-thumbnail`.
+
+Don't report a fallback pass as a clean bill of health. Work out what the asset is for
+— ask, or look at where it's referenced in the codebase — then re-run with
+`--category`. If you cannot determine it, say which category you graded against and
+which ones would fail, so the reader can judge.
+
 ---
 
 ## Showing progress while you work

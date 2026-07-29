@@ -833,6 +833,90 @@ class TestProgressOutput(unittest.TestCase):
         self.assertNotIn("\x1b[", out.stderr, "ANSI escapes are not rendered either")
 
 
+class TestFallbackCategoryIsDisclosed(unittest.TestCase):
+    """`misc` has no filename hints, so reaching it always means nothing matched.
+
+    That matters because misc carries the loosest limits in the config. Real CDN
+    filenames rarely contain 'product', 'thumb' or 'banner', so catalogue assets land
+    there routinely and a 1792 px grid thumbnail passes silently. The tool should say
+    the category was a fallback rather than let it read as a considered match.
+    """
+
+    def _run(self, *args, cwd):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), *args],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env())
+
+    def _asset(self, tmp: str, name: str, size: str = "1792x1792") -> Path:
+        root = Path(tmp)
+        if not (root / ".git").exists():
+            (root / ".git").mkdir()
+        img = root / name
+        ffmpeg("-f", "lavfi", "-i", f"testsrc=size={size}:d=1:r=1", "-frames:v", "1",
+               "-q:v", "8", str(img))
+        return img
+
+    def test_fallback_is_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._asset(tmp, "Roll_On_Duo_430x430_d106e95df1.jpg")
+            out = self._run(img.name, cwd=tmp)
+        self.assertIn("fallback", out.stdout.lower(),
+                      f"nothing matched, so misc must not read as a considered "
+                      f"choice:\n{out.stdout}")
+        self.assertIn("--category", out.stdout,
+                      "say how to correct it, not just that it happened")
+
+    def test_matched_category_is_not_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._asset(tmp, "hero-banner.jpg", "1700x900")
+            out = self._run(img.name, cwd=tmp)
+        self.assertIn("category: `banner-desktop`", out.stdout)
+        self.assertNotIn("fallback", out.stdout.lower(),
+                         "a genuine hint match needs no caveat")
+
+    def test_explicit_category_is_not_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._asset(tmp, "Roll_On_Duo_430x430.jpg")
+            out = self._run("--category", "misc", img.name, cwd=tmp)
+        self.assertNotIn("fallback", out.stdout.lower(),
+                         "the user chose misc deliberately; do not second-guess it")
+
+    def test_fallback_does_not_change_the_verdict(self):
+        """Advisory only. Turning it into a failure would flag most CDN assets."""
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._asset(tmp, "Roll_On_Duo_430x430.jpg")
+            out = self._run(img.name, cwd=tmp)
+        self.assertIn("**Compliant**", out.stdout)
+        self.assertEqual(out.returncode, 0)
+
+    def test_json_records_how_the_category_was_chosen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = self._asset(tmp, "Roll_On_Duo_430x430.jpg")
+            out = self._run("--json", img.name, cwd=tmp)
+        result = json.loads(out.stdout)["results"][0]
+        self.assertEqual(result["category"], "misc")
+        self.assertEqual(result.get("category_source"), "fallback")
+
+
+class TestFaststartOnEncodes(unittest.TestCase):
+    def test_every_mp4_producing_command_uses_faststart(self):
+        """Without it the moov atom sits at the end, so nothing plays until the whole
+        file has downloaded — which for a 19 MB clip on mobile data is the difference
+        between 'slow' and 'broken'."""
+        text = (SKILL / "references" / "video-fixes.md").read_text()
+        blocks = re.findall(r"```bash\n(.*?)```", text, re.S)
+        offenders = [
+            b.strip().splitlines()[0]
+            for b in blocks
+            if "ffmpeg" in b and "_optimised.mp4" in b and "+faststart" not in b
+        ]
+        self.assertEqual(
+            offenders, [],
+            "these commands write an MP4 without +faststart:\n  " +
+            "\n  ".join(offenders),
+        )
+
+
 if __name__ == "__main__":
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is required to run these tests")

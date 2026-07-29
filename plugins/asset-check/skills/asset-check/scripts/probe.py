@@ -340,14 +340,26 @@ def infer_category(target: str, hints: dict, priority: list) -> str:
     thumbnail against full product-image limits — demanding 1400 px of a 400 px
     file. Priority order settles these overlaps deliberately.
     """
+    return resolve_category(target, hints, priority)[0]
+
+
+def resolve_category(target: str, hints: dict, priority: list) -> tuple:
+    """As `infer_category`, but also reports whether a hint actually matched.
+
+    The distinction matters. `misc` has no filename hints at all, so landing there
+    always means nothing matched — and `misc` carries the loosest limits in the
+    config. Real CDN filenames rarely contain "product", "thumb" or "banner", so
+    catalogue assets end up there routinely and an oversized grid thumbnail can pass
+    silently. Callers need to be able to tell a considered category from a shrug.
+    """
     name = os.path.basename(
         urllib.parse.urlparse(target).path if is_url(target) else target
     ).lower()
     ordered = priority + [c for c in hints if c not in priority]
     for category in ordered:
         if any(needle in name for needle in hints.get(category, ())):
-            return category
-    return "misc"
+            return category, True
+    return "misc", False
 
 
 def remote_size(url: str) -> "int | None":
@@ -927,8 +939,20 @@ def render(results: list, sources: "list | None" = None,
             continue
         meta = [f"kind: `{r['kind']}`"]
         if r["kind"] != "video":
-            meta.append(f"category: `{r['category']}`")
+            label = f"category: `{r['category']}`"
+            if r.get("category_source") == "fallback":
+                label += " (fallback — no filename hint matched)"
+            meta.append(label)
         lines.append("\n" + " · ".join(meta) + "\n")
+        # Say this out loud rather than letting misc read as a considered choice: it
+        # has the loosest limits of any category, so an unmatched filename is the one
+        # case where a pass deserves a second look.
+        if r.get("category_source") == "fallback":
+            lines.append(
+                "> The filename matched no category, so this was graded against "
+                "`misc`, which has the\n> loosest limits of any category. If it is "
+                "really a product image, thumbnail, banner\n> or icon, re-run with "
+                "`--category <name>` to grade it against the right thresholds.\n")
         lines.append("| Check | Requirement | Actual | Status |")
         lines.append("|---|---|---|---|")
         for c in r["checks"]:
@@ -1069,10 +1093,15 @@ def main() -> int:
                 print(f"note: --category {args.category} does not apply to video "
                       f"({target}); video limits are fixed", file=sys.stderr)
             checks, category = grade_video(info, thresholds), None
+            category_source = None
         else:
-            category = args.category or infer_category(
-                target, thresholds["filename_hints"], thresholds.get("hint_priority", [])
-            )
+            if args.category:
+                category, category_source = args.category, "explicit"
+            else:
+                category, matched = resolve_category(
+                    target, thresholds["filename_hints"],
+                    thresholds.get("hint_priority", []))
+                category_source = "hint" if matched else "fallback"
             # A reordered hint_priority can re-route a bundled category without
             # touching any limit — a 400px thumbnail graded as a product image then
             # fails as "too small, not auto-fixable", which looks like a real defect
@@ -1094,7 +1123,9 @@ def main() -> int:
             if info.get("format") == "svg" and category not in (
                 "icon-ui", "icon-illustrative", "logo", "misc"
             ):
-                category = "misc"
+                # A hint did match here; it is being overridden for format reasons,
+                # which is not the same as nothing having matched.
+                category, category_source = "misc", "svg-adjusted"
             checks = grade_image(info, category, thresholds)
 
         verdict = verdict_of(checks)
@@ -1106,6 +1137,7 @@ def main() -> int:
             any_unverified = True
         results.append({
             "asset": target, "kind": kind, "category": category,
+            "category_source": category_source,
             "probe": info, "checks": checks, "verdict": verdict,
         })
         progress(len(results), len(args.assets), target, verdict)

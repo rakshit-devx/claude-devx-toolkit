@@ -18,7 +18,7 @@ ffmpeg -i "<input>" \
   -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
   -pix_fmt yuv420p -color_range tv \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:a aac -b:a 160k \
+  -c:a aac -b:a 160k -movflags +faststart \
   "<name>_optimised.mp4" -y
 ```
 
@@ -40,7 +40,7 @@ ffmpeg -i "<input>" \
   -vf "scale=in_range=pc:out_range=tv,format=yuv420p" \
   -c:v libx264 -pix_fmt yuv420p -color_range tv \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:a copy \
+  -c:a copy -movflags +faststart \
   "<name>_optimised.mp4" -y
 ```
 
@@ -69,7 +69,7 @@ ffmpeg -i "<input>" \
   -vf "scale=1080:1920:flags=lanczos,format=yuv420p" \
   -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:a aac -b:a 160k \
+  -c:a aac -b:a 160k -movflags +faststart \
   "<name>_optimised.mp4" -y
 ```
 
@@ -109,7 +109,9 @@ ffmpeg -i "<input>.mov" -c copy -movflags +faststart "<name>_optimised.mp4" -y
 ```
 
 `-movflags +faststart` moves the moov atom to the front so playback can begin before
-the whole file downloads. Worth adding to any MP4 that streams.
+the whole file downloads. Every command here includes it, because without it a viewer
+waits for the entire file before the first frame — on a 19 MB clip over mobile data
+that is the difference between slow and broken.
 
 Note that `ffprobe` reports the container as the whole demuxer family
 (`mov,mp4,m4a,3gp,3g2,mj2`) for both MP4 and MOV, so it cannot tell you which one you
@@ -138,7 +140,7 @@ ffmpeg -i "<input>" -r 30 \
   -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
   -pix_fmt yuv420p -color_range tv \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:a copy \
+  -c:a copy -movflags +faststart \
   "<name>_optimised.mp4" -y
 ```
 
@@ -158,7 +160,7 @@ for f in *.mov; do
     -vf "scale='min(1920,iw)':-2:flags=lanczos,format=yuv420p" \
     -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
     -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-    -c:a aac -b:a 160k \
+    -c:a aac -b:a 160k -movflags +faststart \
     "${f%.*}_optimised.mp4" -y &
 done
 wait
