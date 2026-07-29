@@ -1,0 +1,12 @@
+# Optimised output produced by the skill — never commit generated assets
+*_optimised.*
+*_optimized.*
+
+# Local scratch
+/tmp/
+scratch/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,23 @@
+{
+  "name": "claude-devx-toolkit",
+  "owner": {
+    "name": "Foxtale DevX"
+  },
+  "metadata": {
+    "description": "Shared Claude Code plugins for the Foxtale engineering + design team",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "asset-check",
+      "source": "./plugins/asset-check",
+      "description": "Check image and video assets against team compliance rules and optimise the ones that fail. Catches oversized banners, raster icons that should be SVG, HDR/HEVC videos that crash the mobile app, and full-range colour that washes out on device.",
+      "version": "1.0.0",
+      "category": "productivity",
+      "tags": ["assets", "images", "video", "optimisation", "ffmpeg", "shopify"],
+      "author": {
+        "name": "Foxtale DevX"
+      }
+    }
+  ]
+}

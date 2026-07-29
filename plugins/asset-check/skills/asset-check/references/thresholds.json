@@ -1,0 +1,176 @@
+{
+  "_comment": "Single source of truth for asset compliance. probe.py reads this; the docs quote it. Change a number here and every teammate's verdict changes with it.",
+  "version": "1.0.0",
+
+  "global": {
+    "hard_max_width_px": 2500,
+    "hard_max_bytes": 1048576,
+    "rules": [
+      "Preferred size is ALSO the minimum — never upload smaller and never upscale; upscaling visibly degrades UI quality.",
+      "JPG for photographic content; PNG only when transparency is genuinely required.",
+      "SVG for all icons and logos — guarantees sharpness at any density.",
+      "Keep files under 1 MB, but never buy that by crushing quality. Resize first, compress second.",
+      "Never exceed 2500 px wide.",
+      "Ship separate mobile and desktop banners — one shared file is wrong for both."
+    ]
+  },
+
+  "image_categories": {
+    "product-image": {
+      "label": "Product Image",
+      "use_case": "PDP main / zoom",
+      "min_width_px": 1400,
+      "preferred_width_px": [1400, 1600],
+      "max_width_px": 2000,
+      "hard_max_width_px": 2400,
+      "max_bytes": 1048576,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp"],
+      "notes": "Zoom is the point — keep quality high, prefer resizing over compressing."
+    },
+    "product-thumbnail": {
+      "label": "Product Thumbnail",
+      "use_case": "Listing / grid",
+      "min_width_px": 300,
+      "preferred_width_px": [300, 500],
+      "preferred_bytes": [51200, 153600],
+      "max_width_px": 800,
+      "max_bytes": 307200,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp"],
+      "notes": "Must load instantly — this is the one place aggressive compression is correct."
+    },
+    "banner-desktop": {
+      "label": "Collection / Pages Banner (Desktop)",
+      "use_case": "Collection, homepage, promo banners",
+      "min_width_px": 1600,
+      "preferred_width_px": [1600, 1800],
+      "preferred_bytes": [307200, 716800],
+      "max_width_px": 2500,
+      "max_bytes": 1048576,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp"],
+      "notes": "Covers all large banners."
+    },
+    "banner-mobile": {
+      "label": "Collection / Pages Banner (Mobile)",
+      "use_case": "Mobile banners (all types)",
+      "min_width_px": 800,
+      "preferred_width_px": [800, 1200],
+      "preferred_bytes": [204800, 409600],
+      "max_width_px": 1500,
+      "max_bytes": 716800,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp"],
+      "notes": "Must be a separate crop from desktop, not a downscale of it."
+    },
+    "background": {
+      "label": "Background Image",
+      "use_case": "Section backgrounds",
+      "min_width_px": 1400,
+      "preferred_width_px": [1400, 1800],
+      "preferred_bytes": [307200, 614400],
+      "max_width_px": 2500,
+      "max_bytes": 1048576,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp"],
+      "notes": "Use sparingly — backgrounds are pure download weight."
+    },
+    "icon-ui": {
+      "label": "Icon (UI)",
+      "use_case": "Buttons, small icons",
+      "min_width_px": 24,
+      "preferred_width_px": [24, 64],
+      "preferred_bytes": [0, 20480],
+      "max_width_px": 128,
+      "max_bytes": 51200,
+      "preferred_format": ["svg"],
+      "allowed_formats": ["svg", "png"],
+      "format_required": true,
+      "notes": "SVG is mandatory. A raster UI icon cannot be fixed by this tool — it needs a vector source."
+    },
+    "icon-illustrative": {
+      "label": "Icon (Illustrative)",
+      "use_case": "Feature icons",
+      "min_width_px": 64,
+      "preferred_width_px": [64, 128],
+      "preferred_bytes": [0, 30720],
+      "max_width_px": 256,
+      "max_bytes": 81920,
+      "preferred_format": ["svg"],
+      "allowed_formats": ["svg", "png"],
+      "format_required": true,
+      "notes": "Keep scalable."
+    },
+    "logo": {
+      "label": "Logo",
+      "use_case": "Brand logos",
+      "min_width_px": 100,
+      "preferred_width_px": [100, 300],
+      "preferred_bytes": [0, 51200],
+      "max_width_px": 500,
+      "max_bytes": 102400,
+      "preferred_format": ["svg"],
+      "allowed_formats": ["svg", "png"],
+      "format_required": true,
+      "notes": "SVG ensures sharpness at every density."
+    },
+    "misc": {
+      "label": "Misc Image",
+      "use_case": "Anything else",
+      "min_width_px": 0,
+      "preferred_width_px": [0, 1600],
+      "preferred_bytes": [0, 512000],
+      "max_width_px": 2000,
+      "max_bytes": 1048576,
+      "preferred_format": ["jpg"],
+      "allowed_formats": ["jpg", "png", "webp", "svg"],
+      "notes": "Scale resolution to the screen area it covers — a full-width hero and a small card are not the same asset."
+    }
+  },
+
+  "_hint_priority_comment": "Checked in this order; first category with any filename match wins. Order is by specificity, not alphabetically — 'product-thumb.jpg' must resolve to product-thumbnail, never to the broader product-image.",
+  "hint_priority": [
+    "banner-mobile",
+    "banner-desktop",
+    "product-thumbnail",
+    "icon-illustrative",
+    "logo",
+    "icon-ui",
+    "background",
+    "product-image"
+  ],
+
+  "filename_hints": {
+    "product-thumbnail": ["thumb", "thumbnail", "grid", "tile"],
+    "banner-mobile": ["banner-mobile", "mobile-banner", "mob-banner", "_mob", "-mob", "mweb", "banner_mobile"],
+    "banner-desktop": ["banner", "hero", "promo", "desktop-banner", "dweb"],
+    "background": ["bg", "background", "backdrop"],
+    "icon-ui": ["icon", "ic-", "ic_", "glyph"],
+    "icon-illustrative": ["illustration", "feature-icon", "illus"],
+    "logo": ["logo", "brandmark", "wordmark"],
+    "product-image": ["product", "pdp", "zoom"]
+  },
+
+  "video": {
+    "_comment": "Every value is a MAXIMUM. Lower is always acceptable. High-end video crashes the mobile app or exhausts RAM.",
+    "preferred_height_px": 720,
+    "max_width_px": 1920,
+    "max_height_px": 1080,
+    "required_codec": "h264",
+    "max_bitrate_bps": 5000000,
+    "target_bitrate_bps": 4000000,
+    "preferred_fps": 30,
+    "max_fps": 60,
+    "required_pix_fmt": "yuv420p",
+    "required_color_space": "bt709",
+    "required_color_range": "tv",
+    "hdr_allowed": false,
+    "required_container": "mp4",
+    "hdr_markers": {
+      "color_space": ["bt2020nc", "bt2020c"],
+      "color_transfer": ["arib-std-b67", "smpte2084"],
+      "note": "Dolby Vision shows up as a DOVI side_data entry rather than a colour tag."
+    }
+  }
+}
