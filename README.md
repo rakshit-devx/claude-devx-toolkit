@@ -45,11 +45,8 @@ sudo apt install ffmpeg      # Debian / Ubuntu
 **2. Add the marketplace** (once per machine)
 
 ```
-/plugin marketplace add foxtale-data-product/claude-devx-toolkit
+/plugin marketplace add rakshit-devx/claude-devx-toolkit
 ```
-
-> Not published yet — until then, point it at your local clone:
-> `/plugin marketplace add /Users/you/projects/claude-devx-toolkit`
 
 **3. Install the plugin** (once per machine)
 
@@ -470,10 +467,11 @@ Yes — `probe.py` is a plain CLI with meaningful exit codes. See
 </details>
 
 <details>
-<summary><strong>Making the repo private — does anything change?</strong></summary><br>
+<summary><strong>Do I need access to anything to install this?</strong></summary><br>
 
-No. The install commands are identical; `/plugin marketplace add` uses each teammate's
-own git credentials, so they just need read access to the repo.
+No. The repository is public, so `/plugin marketplace add` works with no credentials
+and no org membership. If it is ever made private, the commands stay identical —
+teammates would just need read access, since the add uses their own git credentials.
 </details>
 
 ---
@@ -499,14 +497,5 @@ Fixes, new categories, and threshold changes go through a PR — see
 
 Editing an *installed* plugin does nothing: the cache is overwritten on the next update
 and no teammate ever sees the change. The repo is the only place a fix survives.
-
-## Publishing
-
-```bash
-cd claude-devx-toolkit
-gh repo create foxtale-data-product/claude-devx-toolkit --private --source=. --push
-```
-
-Then swap the placeholder in [Quickstart](#quickstart) for the real repo path.
 
 <div align="center"><sub>MIT · Foxtale DevX</sub></div>
