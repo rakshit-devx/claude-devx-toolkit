@@ -46,6 +46,34 @@ def ffmpeg(*args: str) -> None:
                    capture_output=True)
 
 
+_EMPTY_HOME: "str | None" = None
+
+
+def empty_home() -> str:
+    """A HOME with no asset-check config, shared across the run."""
+    global _EMPTY_HOME
+    if _EMPTY_HOME is None:
+        _EMPTY_HOME = tempfile.mkdtemp(prefix="asset-check-empty-home-")
+    return _EMPTY_HOME
+
+
+def probe_env(home: "Path | str | None" = None) -> dict:
+    """Environment for probe.py subprocesses.
+
+    HOME points somewhere empty so a developer's real
+    ~/.claude/asset-check/config.json cannot change results, and ASSET_CHECK_CONFIG is
+    cleared for the same reason.
+
+    Crucially HOME is *not* the project directory: config discovery stops before
+    reaching $HOME, so a HOME equal to cwd would suppress the project config the test
+    is trying to exercise. Pass an explicit home only when testing that boundary.
+    """
+    env = dict(os.environ)
+    env["HOME"] = str(home) if home is not None else empty_home()
+    env.pop("ASSET_CHECK_CONFIG", None)
+    return env
+
+
 # --------------------------------------------------------------------------
 # High #1 — SKILL.md must not tell the model to run relative script paths.
 # The skill's cwd is the user's project, so "python3 scripts/probe.py" resolves
@@ -95,7 +123,7 @@ class TestGuidelinesArePackaged(unittest.TestCase):
             out = subprocess.run(
                 [sys.executable, str(dest / "skills" / "asset-check" / "scripts"
                                      / "verify-guidelines.py")],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=probe_env(),
             )
             self.assertEqual(
                 out.returncode, 0,
@@ -303,7 +331,7 @@ class TestUsabilityRegressions(unittest.TestCase):
             out = subprocess.run(
                 [sys.executable, str(SCRIPTS / "probe.py"),
                  "--category", "logo", str(src)],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=probe_env(),
             )
         self.assertIn(
             "categor", (out.stdout + out.stderr).lower(),
@@ -336,7 +364,7 @@ class TestUsabilityRegressions(unittest.TestCase):
             try:
                 out = subprocess.run(
                     [sys.executable, str(SCRIPTS / "probe.py"), url],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, env=probe_env(),
                 )
             finally:
                 srv.shutdown()
@@ -355,10 +383,7 @@ class TestBrandOverrides(unittest.TestCase):
     PROBE = SCRIPTS / "probe.py"
 
     def _run(self, *args, cwd=None, env=None):
-        e = dict(os.environ)
-        # Neutralise any real user config so results don't depend on this machine.
-        e["HOME"] = cwd or tempfile.gettempdir()
-        e.pop("ASSET_CHECK_CONFIG", None)
+        e = probe_env()
         if env:
             e.update(env)
         return subprocess.run([sys.executable, str(self.PROBE), *args],
@@ -501,9 +526,233 @@ class TestBrandOverrides(unittest.TestCase):
                 "global": {"hard_max_width_px": 9000}}))
             out = subprocess.run(
                 [sys.executable, str(SCRIPTS / "verify-guidelines.py")],
-                capture_output=True, text=True, cwd=tmp,
+                capture_output=True, text=True, cwd=tmp, env=probe_env(),
             )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+
+# --------------------------------------------------------------------------
+# Second audit pass. Every case here is a way local config could produce a
+# wrong answer without saying anything — the failure mode that matters most,
+# because a silently mis-graded asset looks exactly like a correct one.
+# --------------------------------------------------------------------------
+class TestConfigBoundary(unittest.TestCase):
+    """The config search must not escape the project."""
+
+    def _img(self, directory: Path) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        img = directory / "hero-banner.jpg"
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=4000x1000:d=1:r=1",
+               "-frames:v", "1", str(img))
+        return img
+
+    def _run(self, img: Path, cwd: Path, home: Path):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), img.name],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env(home))
+
+    LOOSE = {"global": {"hard_max_width_px": 9999},
+             "image_categories": {"banner-desktop": {"max_width_px": 9999}}}
+
+    def test_config_above_a_git_boundary_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".asset-check.json").write_text(json.dumps(self.LOOSE))
+            repo = root / "repo"
+            (repo / ".git").mkdir(parents=True)
+            img = self._img(repo / "assets")
+            out = self._run(img, img.parent, root)
+        self.assertIn(
+            "Non-compliant", out.stdout,
+            "a config outside the repository was applied — one stray file in a parent "
+            f"directory would silently loosen limits for every repo under it:\n{out.stdout}",
+        )
+
+    def test_config_at_the_repo_root_is_found_from_a_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / ".asset-check.json").write_text(json.dumps(self.LOOSE))
+            img = self._img(repo / "assets" / "banners")
+            out = self._run(img, img.parent, Path(tmp))
+        self.assertIn("**Compliant**", out.stdout,
+                      f"config at the repo root should still apply:\n{out.stdout}")
+
+    def test_config_in_home_is_not_treated_as_a_project_config(self):
+        """cwd is *below* $HOME with no repo marker, so the walk would reach $HOME.
+
+        A config there must not act as a project config: the project layer outranks
+        the user layer, so it would silently beat ~/.claude/asset-check/config.json
+        for every directory on the machine.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir(parents=True)
+            (home / ".asset-check.json").write_text(json.dumps(self.LOOSE))
+            img = self._img(home / "scratch" / "work")   # under $HOME, no .git
+            out = self._run(img, img.parent, home)
+        self.assertIn(
+            "Non-compliant", out.stdout,
+            "a config in $HOME was applied with project-level precedence to an "
+            f"unrelated directory beneath it:\n{out.stdout}",
+        )
+
+
+class TestAmbiguousCategoryIsDisclosed(unittest.TestCase):
+    """Overriding hint_priority can silently re-route bundled categories."""
+
+    def _run(self, img: Path, cwd: Path):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), img.name],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env())
+
+    def _thumb(self, directory: Path) -> Path:
+        img = directory / "product-thumb.jpg"
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=400x400:d=1:r=1",
+               "-frames:v", "1", str(img))
+        return img
+
+    def test_priority_override_that_changes_a_category_is_disclosed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".asset-check.json").write_text(json.dumps({
+                "hint_priority": ["product-image", "banner-desktop",
+                                  "product-thumbnail", "banner-mobile"]}))
+            img = self._thumb(root)
+            out = self._run(img, root)
+        combined = out.stdout + out.stderr
+        self.assertIn(
+            "hint_priority", combined,
+            "an override silently re-graded a 400px thumbnail as a product image, "
+            "which then fails as 'too small, not auto-fixable'. The tool knows both "
+            f"answers and should say so:\n{combined}",
+        )
+        self.assertIn("product-thumbnail", combined,
+                      "the disclosure should name the category the baseline would use")
+
+    def test_no_disclosure_when_there_is_no_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            img = self._thumb(root)
+            out = self._run(img, root)
+        self.assertNotIn("hint_priority", out.stdout + out.stderr,
+                         "default runs must stay quiet — a warning that always fires "
+                         "is a warning nobody reads")
+        self.assertIn("category: `product-thumbnail`", out.stdout)
+
+
+class TestGlobalByteCapIsEnforced(unittest.TestCase):
+    """global.hard_max_bytes is a mandatory rule; it must behave like the width cap."""
+
+    def _run(self, *args, cwd):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), *args],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env())
+
+    @staticmethod
+    def _heavy(directory: Path) -> Path:
+        """Noise does not compress, so this reliably lands over 1 MB."""
+        img = directory / "art.jpg"
+        ffmpeg("-f", "lavfi", "-i", "nullsrc=s=1900x1000,geq=random(1)*255:128:128",
+               "-frames:v", "1", "-q:v", "1", str(img))
+        return img
+
+    def test_category_byte_limit_above_the_global_cap_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".asset-check.json").write_text(json.dumps({
+                "image_categories": {"misc": {"max_bytes": 52428800}}}))
+            img = self._heavy(root)
+            out = self._run(img.name, cwd=root)
+        self.assertEqual(out.returncode, 2,
+                         f"a byte limit that the global cap overrides should be "
+                         f"rejected, as the width equivalent already is:\n{out.stdout}")
+        self.assertIn("hard_max_bytes", out.stderr,
+                      "the error should name the global field to raise")
+
+    def test_raising_both_limits_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".asset-check.json").write_text(json.dumps({
+                "global": {"hard_max_bytes": 52428800},
+                "image_categories": {"misc": {"max_bytes": 52428800}}}))
+            img = self._heavy(root)
+            out = self._run(img.name, cwd=root)
+        self.assertNotIn("| FAIL |", out.stdout,
+                         f"raising both should be coherent:\n{out.stdout}")
+
+    def test_default_config_cites_the_global_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            img = self._heavy(root)
+            out = self._run(img.name, cwd=root)
+        self.assertIn("global cap", out.stdout,
+                      f"an over-1MB file should cite the mandatory global limit:\n{out.stdout}")
+
+
+class TestExitCodePrecedence(unittest.TestCase):
+    """A definite failure is more actionable than 'could not verify'."""
+
+    def _run(self, *args, cwd):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), *args],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env())
+
+    def test_definite_failure_outranks_unverifiable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            bad = root / "hero-banner.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=2600x1000:d=1:r=1",
+                   "-frames:v", "1", str(bad))
+            missing = root / "gone.jpg"          # probe failure -> the 2 class
+            out = self._run(bad.name, missing.name, cwd=root)
+        self.assertEqual(
+            out.returncode, 1,
+            "exit 2 hid a real non-compliance behind an unrelated probe problem; a "
+            "gate checking for 'assets failed' would have missed it",
+        )
+
+    def test_unverifiable_alone_still_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            out = self._run("gone.jpg", cwd=root)
+        self.assertEqual(out.returncode, 2)
+
+
+class TestCategoryFlagErrors(unittest.TestCase):
+    def test_suppressed_category_explains_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".asset-check.json").write_text(json.dumps({
+                "image_categories": {"lookbook": {
+                    "max_width_px": 1200, "max_bytes": 409600,
+                    "preferred_format": "jpg"}},
+                "filename_hints": {"lookbook": ["lookbook"]}}))
+            img = root / "a.jpg"
+            ffmpeg("-f", "lavfi", "-i", "testsrc=size=900x600:d=1:r=1",
+                   "-frames:v", "1", str(img))
+            out = subprocess.run(
+                [sys.executable, str(SCRIPTS / "probe.py"),
+                 "--no-overrides", "--category", "lookbook", img.name],
+                capture_output=True, text=True, cwd=str(root), env=probe_env())
+        # Assert on an explanation, not on the word appearing in the usage line —
+        # argparse prints "[--no-overrides]" in usage, which made a weaker
+        # assertion pass while the message was still unhelpful.
+        self.assertIn(
+            "local config", out.stderr,
+            "the category exists but was suppressed by --no-overrides; saying only "
+            f"'invalid choice' sends the user hunting for a typo:\n{out.stderr}",
+        )
+        self.assertNotIn("invalid choice", out.stderr,
+                         "replace the raw argparse error, don't just add to it")
 
 
 if __name__ == "__main__":

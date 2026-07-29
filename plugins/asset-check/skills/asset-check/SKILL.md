@@ -65,9 +65,12 @@ Useful flags:
 | `--category <name>` | Force an image category instead of inferring from the filename |
 | `--json` | Machine-readable output, for chaining or bulk summaries |
 | `--list-categories` | Show the available image categories |
+| `--no-overrides` | Ignore user/project config and grade against team thresholds |
+| `--show-config` | Show which config layers are active and what they changed |
 
 Exit codes: `0` all compliant · `1` at least one non-compliant · `2` a probe failed **or
-a check could not be verified**.
+a check could not be verified**. `1` outranks `2`, so a real failure is never hidden
+behind an unreadable file in the same run.
 
 **Resolving the input:**
 
@@ -211,6 +214,15 @@ Things worth knowing so this behaves predictably:
   every project) → the project's `.asset-check.json` (that repo, everyone). Later
   layers win. Use the user layer for a personal preference, the project layer for a
   brand rule — a brand rule belongs to the repo, not to whoever happened to set it up.
+- **The project config is found by walking up, but only within the project.** The
+  search stops at the first `.git` (or `package.json`, `pyproject.toml`, …) and never
+  looks at `$HOME` or above, so a stray file in a parent directory cannot quietly
+  re-grade unrelated repos. A config in `$HOME` is ignored — put machine-wide
+  preferences in the user layer, which is what it is for.
+- **If a `hint_priority` override changes which category an asset gets**, the run says
+  so and names what the baseline would have used. Reordering that list can turn a
+  compliant 400 px thumbnail into a "too small, not auto-fixable" failure, and that is
+  not something to discover from a confusing report.
 - **These files sit outside the plugin on purpose.** Anything inside it is replaced by
   `/plugin marketplace update`, which is exactly how the previous
   edit-my-own-instructions approach lost everything it learned.

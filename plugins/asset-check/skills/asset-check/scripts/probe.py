@@ -11,16 +11,22 @@ gets the same verdict from the same file.
 
 Usage
   probe.py ASSET [ASSET ...] [--category CATEGORY] [--json]
+                             [--no-overrides] [--show-config]
 
-  ASSET       local path or http(s) URL
-  --category  force an image category; otherwise inferred from the filename
-  --json      machine-readable output instead of the markdown table
+  ASSET           local path or http(s) URL
+  --category      force an image category; otherwise inferred from the filename
+  --json          machine-readable output instead of the markdown table
+  --no-overrides  ignore user/project config and grade against team thresholds
+  --show-config   print the active config layers and what they changed
   --list-categories
 
 Exit codes
   0  every asset compliant
   1  at least one asset non-compliant
-  2  a probe failed (missing file, ffprobe absent, unreadable asset)
+  2  a probe failed, or a check could not be verified
+
+  1 outranks 2: a definite non-compliance is more actionable than "could not
+  verify", so it is never masked when both occur in one run.
 """
 
 from __future__ import annotations
@@ -45,6 +51,10 @@ THRESHOLDS_PATH = SKILL_DIR / "references" / "thresholds.json"
 # anything inside it is replaced wholesale by /plugin marketplace update.
 CONFIG_BASENAMES = (".asset-check.json", "asset-check.config.json")
 USER_CONFIG = Path.home() / ".claude" / "asset-check" / "config.json"
+# Files that mark "this is the top of a project". The config search stops here so it
+# cannot escape into a parent directory and quietly re-grade unrelated repositories.
+PROJECT_MARKERS = (".git", ".hg", ".svn", "package.json", "pyproject.toml",
+                   "go.mod", "Cargo.toml", "firebase.json")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".hevc"}
@@ -115,17 +125,37 @@ def deep_merge(base: dict, over: dict, prefix: str = "",
 
 
 def find_project_config(start: "Path | None" = None) -> "Path | None":
-    """Nearest config file walking up from cwd, like eslint or tsconfig.
+    """Nearest config file walking up from cwd, bounded by the project.
 
     Walking up matters because assets usually live in a subfolder; someone running
     from `assets/banners/` should still pick up the config at their repo root.
+
+    But the walk has to stop, and where it stops matters more than it sounds. An
+    unbounded search reaches the filesystem root, so a single stray file in a parent
+    directory silently re-grades every repository beneath it — and one in `$HOME`
+    becomes a machine-wide config carrying *project* precedence, outranking the user
+    layer that exists for exactly that purpose. So: stop at the project root, and
+    never treat `$HOME` or above as a project.
     """
     here = (start or Path.cwd()).resolve()
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):
+        home = None
+
     for directory in (here, *here.parents):
+        # Machine-wide preferences belong in USER_CONFIG, which is applied as the
+        # lower-precedence user layer rather than as somebody's project.
+        if home is not None and directory == home:
+            break
         for name in CONFIG_BASENAMES:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
+        if any((directory / marker).exists() for marker in PROJECT_MARKERS):
+            break
+        if directory.parent == directory:  # filesystem root
+            break
     return None
 
 
@@ -167,8 +197,16 @@ def load_thresholds(use_overrides: bool = True) -> tuple:
     if not THRESHOLDS_PATH.exists():
         die(f"thresholds.json not found at {THRESHOLDS_PATH}")
     thresholds = json.loads(THRESHOLDS_PATH.read_text())
+    # Keep the team's categorisation inputs so a later override that silently
+    # re-routes a category can be compared against it and reported.
+    baseline = {
+        "hint_priority": list(thresholds.get("hint_priority", [])),
+        "filename_hints": dict(thresholds.get("filename_hints", {})),
+    }
     sources = [("team", THRESHOLDS_PATH)]
     changed: list = []
+
+    thresholds["_baseline"] = baseline
 
     if not use_overrides:
         return thresholds, sources, changed
@@ -206,16 +244,20 @@ def load_thresholds(use_overrides: bool = True) -> tuple:
     # category above it does nothing. Rejecting that outright beats half-applying it:
     # the alternative is a report that fails an asset against the global cap while
     # advising the larger category limit in the same breath.
-    global_cap = thresholds["global"]["hard_max_width_px"]
-    for key, rules in thresholds.get("image_categories", {}).items():
-        for field in ("max_width_px", "hard_max_width_px"):
-            value = rules.get(field)
-            if value and value > global_cap:
-                die(f"category '{key}' sets {field}={value}, above "
-                    f"global.hard_max_width_px={global_cap}, so it could never take "
-                    f"effect.\n  Raise the global cap too:\n"
-                    f'    {{"global": {{"hard_max_width_px": {value}}}}}\n'
-                    f"  or lower '{key}' to {global_cap} or less.")
+    for global_field, fields in (
+        ("hard_max_width_px", ("max_width_px", "hard_max_width_px")),
+        ("hard_max_bytes", ("max_bytes",)),
+    ):
+        global_cap = thresholds["global"][global_field]
+        for key, rules in thresholds.get("image_categories", {}).items():
+            for field in fields:
+                value = rules.get(field)
+                if value and value > global_cap:
+                    die(f"category '{key}' sets {field}={value}, above "
+                        f"global.{global_field}={global_cap}, so it could never take "
+                        f"effect.\n  Raise the global cap too:\n"
+                        f'    {{"global": {{"{global_field}": {value}}}}}\n'
+                        f"  or lower '{key}' to {global_cap} or less.")
 
     # A value touched by two layers is still one override; listing it twice would
     # misstate how much local config is actually in play.
@@ -648,9 +690,18 @@ def grade_image(info: dict, category: str, thresholds: dict) -> list:
     size = info.get("bytes")
     max_b = rules["max_bytes"]
     pref_b = rules.get("preferred_bytes")
+    # "Keep files under 1 MB" is a mandatory rule, so it needs a gate of its own
+    # rather than relying on every category happening to set a lower limit. Mirrors
+    # how the global width cap is applied.
+    hard_b = thresholds["global"]["hard_max_bytes"]
     if size is None:
         checks.append(check("File size", f"<= {human_bytes(max_b)}", "unknown", WARN,
                             "Could not determine size (CDN withheld Content-Length)."))
+    elif size > hard_b:
+        checks.append(check("File size", f"<= {human_bytes(hard_b)} (global cap)",
+                            human_bytes(size), FAIL,
+                            "Resize first, then compress — do not crush quality to "
+                            "hit the number."))
     elif size > max_b:
         checks.append(check("File size", f"<= {human_bytes(max_b)}", human_bytes(size), FAIL,
                             "Resize first, then compress — do not crush quality to hit the number."))
@@ -891,7 +942,9 @@ def main() -> int:
         description="Grade image/video assets against the team thresholds.",
     )
     ap.add_argument("assets", nargs="*", help="local paths and/or http(s) URLs")
-    ap.add_argument("--category", choices=categories,
+    # Validated by hand rather than with argparse `choices`, so that a category which
+    # exists only in local config can explain itself instead of looking like a typo.
+    ap.add_argument("--category",
                     help="force an image category (default: inferred from filename)")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit JSON instead of the markdown table")
@@ -928,16 +981,37 @@ def main() -> int:
             print(f"{name:20s} {rules['label']} — {rules['use_case']}{origin}")
         return 0
 
+    if args.category and args.category not in categories:
+        # Distinguish "typo" from "suppressed": with --no-overrides the category may
+        # genuinely exist in local config, and reporting only "invalid choice" sends
+        # the user hunting for a spelling mistake that isn't there.
+        if known.no_overrides:
+            try:
+                with_overrides, _, _ = load_thresholds(use_overrides=True)
+            except SystemExit:
+                with_overrides = {"image_categories": {}}
+            if args.category in with_overrides.get("image_categories", {}):
+                die(f"category '{args.category}' is defined in local config, but "
+                    f"--no-overrides ignores local config.\n  Drop --no-overrides to "
+                    f"use it, or choose one of: {', '.join(categories)}")
+        die(f"unknown category '{args.category}'.\n  Available: "
+            f"{', '.join(categories)}")
+
     if not args.assets:
         ap.error("no assets given")
 
-    results, worst = [], 0
+    # Tracked as separate flags rather than one escalating number: a definite
+    # non-compliance is more actionable than "could not verify", so it must not be
+    # masked when both occur. A gate looking for "assets failed" would otherwise miss
+    # a real failure that happened to share a run with an unreadable file.
+    results = []
+    any_fail = any_unverified = any_error = False
     for target in args.assets:
         kind = kind_of(target)
         if kind == "unknown":
             results.append({"asset": target, "kind": "unknown",
                             "error": f"unrecognised extension '{ext_of(target) or 'none'}'"})
-            worst = max(worst, 2)
+            any_error = True
             continue
 
         if kind == "svg":
@@ -949,7 +1023,7 @@ def main() -> int:
 
         if info.get("_error"):
             results.append({"asset": target, "kind": kind, "error": info["_error"]})
-            worst = max(worst, 2)
+            any_error = True
             continue
 
         if kind == "video":
@@ -963,6 +1037,23 @@ def main() -> int:
             category = args.category or infer_category(
                 target, thresholds["filename_hints"], thresholds.get("hint_priority", [])
             )
+            # A reordered hint_priority can re-route a bundled category without
+            # touching any limit — a 400px thumbnail graded as a product image then
+            # fails as "too small, not auto-fixable", which looks like a real defect
+            # in the asset. The tool knows both answers, so it should say so. Fires
+            # only when an override actually changed the outcome, so default runs
+            # stay silent.
+            baseline = thresholds.get("_baseline") or {}
+            if not args.category and baseline.get("hint_priority") != thresholds.get(
+                    "hint_priority", []):
+                baseline_category = infer_category(
+                    target, baseline.get("filename_hints", {}),
+                    baseline.get("hint_priority", []))
+                if baseline_category != category:
+                    print(f"note: hint_priority override graded "
+                          f"{os.path.basename(target)} as '{category}'; the team "
+                          f"baseline would use '{baseline_category}'. Pass "
+                          f"--category to be explicit.", file=sys.stderr)
             # An SVG that landed in a JPG-preferring category is fine, not a defect.
             if info.get("format") == "svg" and category not in (
                 "icon-ui", "icon-illustrative", "logo", "misc"
@@ -972,11 +1063,11 @@ def main() -> int:
 
         verdict = verdict_of(checks)
         if verdict == "non-compliant":
-            worst = max(worst, 1)
+            any_fail = True
         elif verdict == "unverified":
-            # Exit 2 (same class as a failed probe): the tool could not answer, so a
-            # CI gate should stop rather than infer approval from silence.
-            worst = max(worst, 2)
+            # Same class as a failed probe: the tool could not answer, so a gate
+            # should stop rather than infer approval from silence.
+            any_unverified = True
         results.append({
             "asset": target, "kind": kind, "category": category,
             "probe": info, "checks": checks, "verdict": verdict,
@@ -992,7 +1083,9 @@ def main() -> int:
         }, indent=2))
     else:
         print(render(results, sources, changed))
-    return worst
+    if any_fail:
+        return 1
+    return 2 if (any_unverified or any_error) else 0
 
 
 if __name__ == "__main__":

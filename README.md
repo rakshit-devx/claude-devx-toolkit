@@ -183,6 +183,9 @@ python3 scripts/probe.py --list-categories
 | `1` | at least one non-compliant |
 | `2` | a probe failed, **or a check could not be verified** |
 
+`1` outranks `2`: a definite non-compliance is never masked by an unreadable file in
+the same run.
+
 That last case matters. Remote video sometimes arrives without its colour metadata, so
 HDR genuinely cannot be determined — those checks report `UNKN` and the verdict is
 **Could not fully verify**, never "compliant". A gate should stop on `2` rather than
