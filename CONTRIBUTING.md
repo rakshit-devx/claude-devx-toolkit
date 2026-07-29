@@ -27,7 +27,7 @@ from there, so the docs can't drift out of sync with what the script enforces.
 
 ## Changing a limit
 
-Two files hold the same numbers: [`docs/asset-guidelines.md`](docs/asset-guidelines.md),
+Two files hold the same numbers: [`asset-guidelines.md`](plugins/asset-check/skills/asset-check/references/asset-guidelines.md),
 which people read and which is the authority, and `thresholds.json`, which the tooling
 enforces.
 
@@ -78,7 +78,18 @@ In `thresholds.json`:
 
 ## Testing a change
 
-Generate fixtures with ffmpeg — no need to commit binaries:
+**Run the suite first — it is the fastest way to know you broke something:**
+
+```bash
+python3 tests/test_asset_check.py
+```
+
+Every test there pins a real defect. Add one for whatever you fix; the bugs worth
+guarding against are the ones whose output looked fine, so a passing eyeball is not
+evidence. If you change grading behaviour deliberately, update the test in the same
+commit and say why in the message.
+
+For exploratory checks, generate fixtures with ffmpeg — no need to commit binaries:
 
 ```bash
 # oversized banner
@@ -124,6 +135,13 @@ everything), and a video.
   fix but must never be *required* — every failure mode needs a working ffmpeg path.
 - **Cross-platform.** No `sips` or other macOS-only tools; the team isn't all on Mac.
 - **Never overwrite source assets.** Output goes to `<name>_optimised.<ext>`.
+- **Everything the plugin needs lives under `plugins/asset-check/`.** Files outside it
+  are not packaged on install, so a reference at the repo root is missing for every
+  teammate who installs the plugin — which is why `asset-guidelines.md` sits in
+  `references/` rather than a top-level `docs/`.
+- **Never let an unreadable check report as a pass.** `probe.py` distinguishes *absent*
+  metadata from *unreadable* metadata and emits `UNKN` for the latter. Collapsing the
+  two is how a remote HDR video came to be reported as SDR-compliant.
 
 ## Releasing
 

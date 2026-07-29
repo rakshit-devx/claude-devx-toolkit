@@ -65,7 +65,7 @@ wrong — now the metadata lies about the pixels.
 
 ```bash
 ffmpeg -i "<input>" \
-  -map 0:v:0 -map 0:a:0 \
+  -map 0:v:0 -map 0:a:0? \
   -vf "scale=1080:1920:flags=lanczos,format=yuv420p" \
   -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
@@ -84,9 +84,13 @@ landscape use `scale=1920:1080`, or `scale='min(1920,iw)':-2` to stay shrink-onl
 orientation-agnostic. Use `-2` rather than `-1` for video: H.264 requires even
 dimensions and `-2` rounds to the nearest even number.
 
-`-map 0:v:0 -map 0:a:0` is essential for MOV and Dolby Vision sources. They often
+`-map 0:v:0 -map 0:a:0?` is essential for MOV and Dolby Vision sources. They often
 carry multiple video tracks (or a DV enhancement layer), and without explicit mapping
 ffmpeg may select the wrong one or fail on the stream layout.
+
+The trailing `?` on the audio map makes it optional. Without it, ffmpeg aborts with
+`Stream map '' matches no streams` on any video that has no audio track — which
+promotional and product clips very often do not.
 
 ---
 
@@ -95,7 +99,7 @@ ffmpeg may select the wrong one or fail on the stream layout.
 **Symptom:** `codec_name: hevc`, or the file is `.mov`.
 
 Re-encode to H.264 in MP4 using the Issue 3 command. Always include
-`-map 0:v:0 -map 0:a:0` for MOV sources.
+`-map 0:v:0 -map 0:a:0?` for MOV sources.
 
 If the codec is already H.264 and only the container is wrong, remux instead of
 re-encoding — it is instant and lossless:
@@ -150,7 +154,7 @@ concurrently — they are CPU-bound and independent:
 
 ```bash
 for f in *.mov; do
-  ffmpeg -v error -i "$f" -map 0:v:0 -map 0:a:0 \
+  ffmpeg -v error -i "$f" -map 0:v:0 -map 0:a:0? \
     -vf "scale='min(1920,iw)':-2:flags=lanczos,format=yuv420p" \
     -c:v libx264 -b:v 4M -maxrate 5M -bufsize 5M \
     -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 \

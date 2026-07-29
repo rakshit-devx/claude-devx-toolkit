@@ -21,7 +21,7 @@
       "Cleaner, more maintainable asset management.",
       "Efficient use of storage — Shopify storage is limited and easily overused."
     ],
-    "source": "docs/asset-guidelines.md — the human-readable authority. scripts/verify-guidelines.py asserts this file matches it; run it after changing either."
+    "source": "asset-guidelines.md, beside this file — the human-readable authority. ../scripts/verify-guidelines.py asserts this file matches it; run it after changing either. Both live inside the skill because files outside plugins/asset-check/ are not packaged on install."
   },
 
   "image_categories": {

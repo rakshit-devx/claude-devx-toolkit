@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert that thresholds.json still matches docs/asset-guidelines.md.
+"""Assert that thresholds.json still matches references/asset-guidelines.md.
 
 Two files hold the same numbers: the markdown doc people read, and the JSON the
 tooling enforces. Asking contributors to remember to update both is exactly how the
@@ -28,9 +28,11 @@ from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 THRESHOLDS = SKILL_DIR / "references" / "thresholds.json"
-# skills/asset-check -> plugins/asset-check -> plugins -> repo root
-REPO_ROOT = SKILL_DIR.parent.parent.parent.parent
-GUIDELINES = REPO_ROOT / "docs" / "asset-guidelines.md"
+# Both files sit inside the skill on purpose. Anything outside plugins/asset-check/ is
+# not packaged when a teammate installs the plugin, so a guidelines doc at the repo
+# root would be missing for every installed user — and this script would resolve it to
+# a path that does not exist.
+GUIDELINES = SKILL_DIR / "references" / "asset-guidelines.md"
 
 KB = 1024
 DASH = r"[–—-]"  # the doc uses an en dash; accept hyphen and em dash too
@@ -242,7 +244,7 @@ def main() -> int:
                             f"thresholds.json has {thresholds['global']['hard_max_width_px']}")
 
     if problems:
-        print(f"thresholds.json disagrees with docs/asset-guidelines.md "
+        print(f"thresholds.json disagrees with {GUIDELINES.name} "
               f"({len(problems)} issue{'s' if len(problems) != 1 else ''}):\n")
         for p in problems:
             print(f"  - {p}")
@@ -250,7 +252,7 @@ def main() -> int:
         return 1
 
     if not args.quiet:
-        print(f"thresholds.json matches docs/asset-guidelines.md "
+        print(f"thresholds.json matches {GUIDELINES.name} "
               f"({len(image_rows)} image categories, {len(video_rows)} video settings, "
               f"{len(thresholds['global']['rules'])} mandatory rules).")
     return 0

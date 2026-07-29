@@ -102,7 +102,7 @@ flowchart LR
         P["probe.py<br/>grades"]
     end
     subgraph T["Truth — reviewed, versioned, yours"]
-        D["docs/asset-guidelines.md<br/>the authority"]
+        D["references/asset-guidelines.md<br/>the authority"]
         J["thresholds.json<br/>what runs"]
     end
     D -- "verify-guidelines.py<br/>asserts they agree" --> J
@@ -175,7 +175,12 @@ python3 scripts/probe.py --list-categories
 |---|---|
 | `0` | every asset compliant |
 | `1` | at least one non-compliant |
-| `2` | a probe failed — missing file, bad extension, unreadable asset |
+| `2` | a probe failed, **or a check could not be verified** |
+
+That last case matters. Remote video sometimes arrives without its colour metadata, so
+HDR genuinely cannot be determined — those checks report `UNKN` and the verdict is
+**Could not fully verify**, never "compliant". A gate should stop on `2` rather than
+read silence as approval; download the file and re-probe it locally for a real answer.
 
 Which makes it easy to gate CI or a pre-commit hook:
 
@@ -210,7 +215,7 @@ Categories are inferred from the filename, or forced with `--category`:
 **Video** — resolution, codec, bitrate, frame rate, pixel format, colour space, HDR, and
 container. Every video limit is a maximum; lower is always fine.
 
-**The actual numbers live in one place: [`docs/asset-guidelines.md`](docs/asset-guidelines.md).**
+**The actual numbers live in one place: [`references/asset-guidelines.md`](plugins/asset-check/skills/asset-check/references/asset-guidelines.md).**
 They are deliberately not repeated here — a third copy is a third thing to forget to
 update.
 
@@ -269,7 +274,7 @@ No macOS-only tools are used, so this works the same on Linux and WSL.
 
 ## Source of truth
 
-[`docs/asset-guidelines.md`](docs/asset-guidelines.md) is the **human-readable
+[`references/asset-guidelines.md`](plugins/asset-check/skills/asset-check/references/asset-guidelines.md) is the **human-readable
 authority** — the categories, the mandatory rules, the video table, and the reasoning
 behind each. `thresholds.json` is the machine-readable copy the tooling enforces.
 
@@ -277,7 +282,7 @@ Rather than trusting anyone to keep two files in step, the agreement is checked:
 
 ```bash
 python3 plugins/asset-check/skills/asset-check/scripts/verify-guidelines.py
-# thresholds.json matches docs/asset-guidelines.md (9 image categories, 8 video settings, 6 mandatory rules)
+# thresholds.json matches asset-guidelines.md (9 image categories, 8 video settings, 6 mandatory rules)
 ```
 
 It compares every category's minimum, preferred range, maximum width, hard cap,
@@ -379,7 +384,7 @@ action needed. Warnings never make an asset non-compliant.
 <details>
 <summary><strong>How do I change a limit?</strong></summary><br>
 
-Edit [`docs/asset-guidelines.md`](docs/asset-guidelines.md), update `thresholds.json`,
+Edit [`references/asset-guidelines.md`](plugins/asset-check/skills/asset-check/references/asset-guidelines.md), update `thresholds.json`,
 then run `verify-guidelines.py` — it tells you precisely what still disagrees. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 </details>
@@ -397,6 +402,20 @@ Yes — `probe.py` is a plain CLI with meaningful exit codes. See
 No. The install commands are identical; `/plugin marketplace add` uses each teammate's
 own git credentials, so they just need read access to the repo.
 </details>
+
+---
+
+## Tests
+
+```bash
+python3 tests/test_asset_check.py
+```
+
+21 regression tests, stdlib `unittest`, fixtures generated on the fly with ffmpeg — no
+binaries committed. Each test pins a bug that was found and fixed, several of which
+produced output that looked entirely reasonable while being wrong (a remote HDR video
+reported as SDR; `width="100%"` read as 100 px; a portrait photo graded on its stored
+landscape dimensions). Run it before any PR.
 
 ---
 

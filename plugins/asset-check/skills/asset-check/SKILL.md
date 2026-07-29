@@ -12,19 +12,32 @@ Two things make this reliable rather than a judgement call each time:
 
 - **`references/thresholds.json` holds every limit.** Do not restate numbers from
   memory or hardcode them into commands — read them from the file, or let `probe.py`
-  apply them. The human-readable guidelines behind it are `docs/asset-guidelines.md`
-  at the repo root; read that when someone asks *why* a limit exists or wants the rules
-  explained rather than an asset checked.
-- **`scripts/probe.py` does the grading.** Eyeballing whether 1.9 MB is acceptable for
-  a mobile banner produces different answers from different people on different days.
+  apply them. The human-readable guidelines behind it are
+  `references/asset-guidelines.md`, beside it; read that when someone asks *why* a
+  limit exists or wants the rules explained rather than an asset checked.
+- **`probe.py` does the grading.** Eyeballing whether 1.9 MB is acceptable for a
+  mobile banner produces different answers from different people on different days.
   The script produces the same verdict every time.
+
+### Running the bundled scripts
+
+Every command below is written `$SKILL/…`. Set that once per session, because your
+working directory is the user's project, not this skill — a bare `scripts/probe.py`
+resolves against their repo and fails with *No such file or directory*:
+
+```bash
+SKILL="${CLAUDE_PLUGIN_ROOT:-<this skill's base directory>}/skills/asset-check"
+```
+
+`CLAUDE_PLUGIN_ROOT` is set when this runs as an installed plugin. If it is empty, use
+the absolute base directory reported when this skill loaded.
 
 ---
 
 ## Step 0 — Confirm the tooling (first run only)
 
 ```bash
-bash scripts/check-deps.sh
+bash "$SKILL/scripts/check-deps.sh"
 ```
 
 Only `ffmpeg`, `ffprobe`, and `python3` are required. ImageMagick and `cwebp` are
@@ -39,7 +52,7 @@ Skip this once you have seen it pass in the session.
 ## Step 1 — Probe and grade
 
 ```bash
-python3 scripts/probe.py <asset> [<asset> ...]
+python3 "$SKILL/scripts/probe.py" <asset> [<asset> ...]
 ```
 
 Accepts local paths and `http(s)` URLs, mixed freely, as many as you like in one call
@@ -53,7 +66,8 @@ Useful flags:
 | `--json` | Machine-readable output, for chaining or bulk summaries |
 | `--list-categories` | Show the available image categories |
 
-Exit codes: `0` all compliant · `1` at least one non-compliant · `2` a probe failed.
+Exit codes: `0` all compliant · `1` at least one non-compliant · `2` a probe failed **or
+a check could not be verified**.
 
 **Resolving the input:**
 
@@ -83,6 +97,10 @@ Then state the verdict per asset:
 - **Compliant, with warnings** — within limits but not ideal. Say what and why; do not
   push a fix the rules don't require.
 - **Non-compliant** — name each failing check and what it needs.
+- **Could not fully verify** — one or more checks came back `UNKN`. Never round this up
+  to "looks fine". It happens most often on remote video, where colour metadata may not
+  arrive over HTTP, so HDR genuinely cannot be determined. Say plainly which checks are
+  unanswered and that confirming them needs the file downloaded and re-probed locally.
 
 When you ask someone to change an asset, give the reason alongside the number.
 `global.rationale` in `thresholds.json` has them: quality consistency across web and
@@ -133,7 +151,7 @@ Re-probe the output. An encode that ran without error still may not have produce
 compliant file:
 
 ```bash
-python3 scripts/probe.py "<name>_optimised.jpg" --category <same-category>
+python3 "$SKILL/scripts/probe.py" "<name>_optimised.jpg" --category <same-category>
 ```
 
 Check the fix didn't trade one failure for another — resizing to satisfy a width limit
@@ -171,6 +189,6 @@ Open a PR against the toolkit repo instead:
    cargo-culted into the wrong situation.
 2. If a limit changed, edit `references/thresholds.json` — not the prose.
 3. If it warrants a new check, extend `grade_image` / `grade_video` in
-   `scripts/probe.py`.
+   `scripts/probe.py`, and add a regression test under `tests/`.
 
 See `CONTRIBUTING.md` in the repo root.

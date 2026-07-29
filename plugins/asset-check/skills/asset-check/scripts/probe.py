@@ -30,9 +30,11 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -56,7 +58,25 @@ CODEC_TO_FORMAT = {
 }
 
 OK, WARN, FAIL = "pass", "warn", "fail"
-MARK = {OK: "PASS", WARN: "WARN", FAIL: "FAIL"}
+# UNKNOWN is not a milder FAIL — it means the check could not be evaluated at all.
+# Keeping it distinct matters because the alternative is asserting a fact that was
+# never read: a remote video whose colour metadata did not arrive would otherwise be
+# reported as "HDR: disabled — SDR — PASS", which is precisely backwards for the one
+# check that exists to stop the app crashing.
+UNKNOWN = "unknown"
+MARK = {OK: "PASS", WARN: "WARN", FAIL: "FAIL", UNKNOWN: "UNKN"}
+
+# ffprobe writes these to stderr while still exiting 0 and emitting usable JSON.
+# When any appears, stream-level fields (pix_fmt, colour tags) may be absent simply
+# because the data never arrived — not because the file lacks them.
+INCOMPLETE_MARKERS = (
+    "partial file",
+    "error reading http response",
+    "truncat",
+    "invalid data found",
+    "could not find codec parameters",
+    "end of file",
+)
 
 
 # ---------------------------------------------------------------- helpers
@@ -93,8 +113,33 @@ def is_url(target: str) -> bool:
 
 
 def ext_of(target: str) -> str:
-    path = urllib.request.urlparse(target).path if is_url(target) else target
+    path = urllib.parse.urlparse(target).path if is_url(target) else target
     return os.path.splitext(path)[1].lower()
+
+
+def remote_kind(url: str) -> str:
+    """Fall back to the Content-Type header when a URL carries no extension.
+
+    Signed and proxied CDN URLs frequently end in an opaque token rather than
+    `.jpg`, and refusing those outright would make a headline feature ("just paste
+    the CDN link") fail on exactly the links people paste.
+    """
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(url, method=method)
+            if method == "GET":
+                req.add_header("Range", "bytes=0-0")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        except (urllib.error.URLError, OSError):
+            continue
+        if ctype == "image/svg+xml":
+            return "svg"
+        if ctype.startswith("video/"):
+            return "video"
+        if ctype.startswith("image/"):
+            return "image"
+    return "unknown"
 
 
 def kind_of(target: str) -> str:
@@ -105,6 +150,8 @@ def kind_of(target: str) -> str:
         return "video"
     if ext in IMAGE_EXTS:
         return "image"
+    if not ext and is_url(target):
+        return remote_kind(target)
     return "unknown"
 
 
@@ -118,7 +165,7 @@ def infer_category(target: str, hints: dict, priority: list) -> str:
     file. Priority order settles these overlaps deliberately.
     """
     name = os.path.basename(
-        urllib.request.urlparse(target).path if is_url(target) else target
+        urllib.parse.urlparse(target).path if is_url(target) else target
     ).lower()
     ordered = priority + [c for c in hints if c not in priority]
     for category in ordered:
@@ -165,6 +212,61 @@ def size_of(target: str) -> "int | None":
 # ---------------------------------------------------------------- probing
 
 
+def exif_orientation(path: str) -> "int | None":
+    """Read the EXIF Orientation tag from a local JPEG, or None.
+
+    ffprobe reports stored dimensions and does not expose still-image orientation, so
+    a portrait photo from a phone (stored landscape with Orientation=6) would be graded
+    on the wrong axis — a 1600x900 file that actually displays as 900x1600.
+
+    Parsed by hand because the point of this script is to need nothing beyond ffmpeg.
+    Any malformed structure returns None; a bad guess here is worse than no guess.
+    """
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(2) != b"\xff\xd8":  # not a JPEG
+                return None
+            while True:
+                marker = fh.read(2)
+                if len(marker) < 2 or marker[0] != 0xFF:
+                    return None
+                if marker[1] in (0xD9, 0xDA):  # end of metadata
+                    return None
+                size = int.from_bytes(fh.read(2), "big")
+                if size < 2:
+                    return None
+                segment = fh.read(size - 2)
+                if marker[1] != 0xE1 or not segment.startswith(b"Exif\x00\x00"):
+                    continue
+
+                tiff = segment[6:]
+                if len(tiff) < 8:
+                    return None
+                byte_order = tiff[:2]
+                if byte_order == b"MM":
+                    endian = ">"
+                elif byte_order == b"II":
+                    endian = "<"
+                else:
+                    return None
+                ifd_offset = struct.unpack(endian + "I", tiff[4:8])[0]
+                if ifd_offset + 2 > len(tiff):
+                    return None
+                count = struct.unpack(endian + "H", tiff[ifd_offset:ifd_offset + 2])[0]
+                for i in range(count):
+                    entry = ifd_offset + 2 + i * 12
+                    if entry + 12 > len(tiff):
+                        return None
+                    tag = struct.unpack(endian + "H", tiff[entry:entry + 2])[0]
+                    if tag == 0x0112:  # Orientation
+                        value = struct.unpack(endian + "H",
+                                              tiff[entry + 8:entry + 10])[0]
+                        return value if 1 <= value <= 8 else None
+                return None
+    except (OSError, struct.error, IndexError):
+        return None
+
+
 def run_ffprobe(target: str) -> dict:
     if not shutil.which("ffprobe"):
         die("ffprobe not found on PATH — install ffmpeg (see check-deps.sh)")
@@ -181,9 +283,18 @@ def run_ffprobe(target: str) -> dict:
     if out.returncode != 0:
         return {"_error": (out.stderr or "ffprobe failed").strip().splitlines()[-1]}
     try:
-        return json.loads(out.stdout or "{}")
+        data = json.loads(out.stdout or "{}")
     except json.JSONDecodeError:
         return {"_error": "ffprobe returned unparseable JSON"}
+
+    # Keep the warnings even on success. ffprobe exits 0 while reporting things like
+    # "stream 0, offset 0x30: partial file", and that line is the only evidence that
+    # the metadata below is incomplete rather than genuinely absent.
+    warnings = [ln.strip() for ln in (out.stderr or "").splitlines() if ln.strip()]
+    data["_warnings"] = warnings
+    blob = " ".join(warnings).lower()
+    data["_incomplete"] = any(marker in blob for marker in INCOMPLETE_MARKERS)
+    return data
 
 
 def probe_svg(target: str) -> dict:
@@ -206,8 +317,25 @@ def probe_svg(target: str) -> dict:
         return info
 
     def dim(attr: str) -> "float | None":
-        m = re.search(rf'\b{attr}\s*=\s*["\']?\s*([\d.]+)', raw)
-        return float(m.group(1)) if m else None
+        """Absolute pixel width, or None when the value is relative.
+
+        `width="100%"` is not 100 pixels and `width="3em"` is not 3 — treating the
+        bare number as pixels made a 2400-unit graphic report as a compliant 100 px
+        icon. Only unitless values and explicit `px` are pixels; anything else means
+        the real geometry lives in the viewBox.
+        """
+        m = re.search(rf'\b{attr}\s*=\s*["\']\s*([\d.]+)\s*([a-z%]*)\s*["\']',
+                      raw, re.I)
+        if not m:
+            m = re.search(rf'\b{attr}\s*=\s*([\d.]+)([a-z%]*)', raw, re.I)
+        if not m:
+            return None
+        if m.group(2).lower() not in ("", "px"):
+            return None
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
 
     width, height = dim("width"), dim("height")
 
@@ -243,10 +371,19 @@ def probe_raster(target: str) -> dict:
     st = streams[0]
     fmt = data.get("format", {})
     size = fmt.get("size")
+
+    width, height = st.get("width"), st.get("height")
+    # Orientations 5-8 rotate by 90 degrees, so the displayed dimensions are swapped
+    # relative to what is stored. Grade what the user will actually see.
+    orientation = None if is_url(target) else exif_orientation(target)
+    if orientation in (5, 6, 7, 8) and width and height:
+        width, height = height, width
+
     return {
         "kind": "image",
-        "width": st.get("width"),
-        "height": st.get("height"),
+        "width": width,
+        "height": height,
+        "exif_orientation": orientation,
         "format": CODEC_TO_FORMAT.get(st.get("codec_name", ""), st.get("codec_name")),
         "pix_fmt": st.get("pix_fmt"),
         "bytes": int(size) if size and str(size).isdigit() else size_of(target),
@@ -298,8 +435,15 @@ def probe_video(target: str) -> dict:
         for entry in side
     )
 
+    # A fully-parsed video stream always reports pix_fmt. Its absence means the codec
+    # parameters were never read, so every colour-related field below is unknown
+    # rather than unset — treat the whole probe as incomplete.
+    incomplete = bool(data.get("_incomplete")) or st.get("pix_fmt") is None
+
     return {
         "kind": "video",
+        "incomplete": incomplete,
+        "warnings": data.get("_warnings", []),
         "width": st.get("width"),
         "height": st.get("height"),
         "codec": st.get("codec_name"),
@@ -409,6 +553,12 @@ def grade_image(info: dict, category: str, thresholds: dict) -> list:
 def grade_video(info: dict, thresholds: dict) -> list:
     v = thresholds["video"]
     checks = []
+    # When the read was incomplete, the colour and pixel-format checks below cannot be
+    # answered. Reporting them as UNKNOWN keeps the tool honest; the remedy tells the
+    # user how to get a real answer instead of leaving them with a fabricated pass.
+    incomplete = bool(info.get("incomplete"))
+    unreadable = ("could not be read from this source. Download the file and re-check "
+                  "it locally for a real answer")
 
     w, h = info.get("width"), info.get("height")
     if not (w and h):
@@ -462,7 +612,10 @@ def grade_video(info: dict, thresholds: dict) -> list:
         checks.append(check("FPS", f"<= {v['max_fps']}", f"{fps:g}", status, note))
 
     pix = info.get("pix_fmt") or "unknown"
-    if pix == v["required_pix_fmt"]:
+    if incomplete and not info.get("pix_fmt"):
+        checks.append(check("Pixel format", v["required_pix_fmt"], "unreadable",
+                            UNKNOWN, f"Pixel format {unreadable}."))
+    elif pix == v["required_pix_fmt"]:
         checks.append(check("Pixel format", v["required_pix_fmt"], pix, OK))
     else:
         # yuvj420p means full-range luma, which washes out on mobile players.
@@ -476,13 +629,23 @@ def grade_video(info: dict, thresholds: dict) -> list:
     ct = info.get("color_transfer") or ""
     is_hdr = cs in hdr["color_space"] or ct in hdr["color_transfer"] or info.get("dolby_vision")
     if is_hdr:
+        # A positive HDR marker is trustworthy even from a partial read — the tag was
+        # actually seen. Only the *absence* of markers is ambiguous.
         label = "Dolby Vision" if info.get("dolby_vision") else (ct or cs)
         checks.append(check("HDR", "disabled", f"HDR ({label})", FAIL,
                             "Scale + retag to bt709. Do NOT tone map — it desaturates badly."))
+    elif incomplete and not cs and not ct:
+        checks.append(check("HDR", "disabled", "unreadable", UNKNOWN,
+                            f"Cannot confirm this is SDR: the colour tags {unreadable}. "
+                            "Do not treat it as SDR-safe until verified.",
+                            fixable=False))
     else:
         checks.append(check("HDR", "disabled", "SDR", OK))
 
-    if not cs:
+    if incomplete and not cs:
+        checks.append(check("Color space", v["required_color_space"], "unreadable",
+                            UNKNOWN, f"Colour space {unreadable}.", fixable=False))
+    elif not cs:
         # Untagged SDR H.264 is bt709 by convention; not worth a re-encode alone.
         checks.append(check("Color space", v["required_color_space"], "untagged", WARN,
                             "Treated as bt709. No action needed unless re-encoding anyway."))
@@ -523,6 +686,10 @@ def grade_video(info: dict, thresholds: dict) -> list:
 def verdict_of(checks: list) -> str:
     if any(c["status"] == FAIL for c in checks):
         return "non-compliant"
+    # Unverifiable ranks above warnings: an unanswered check is not a mild note, and
+    # must never collapse into "compliant".
+    if any(c["status"] == UNKNOWN for c in checks):
+        return "unverified"
     if any(c["status"] == WARN for c in checks):
         return "compliant-with-warnings"
     return "compliant"
@@ -549,9 +716,12 @@ def render(results: list) -> str:
         if verdict == "compliant":
             lines.append("\n**Compliant**\n")
         else:
-            problems = [c for c in r["checks"] if c["status"] in (FAIL, WARN)]
-            label = ("Non-compliant" if verdict == "non-compliant"
-                     else "Compliant, with warnings")
+            problems = [c for c in r["checks"] if c["status"] in (FAIL, WARN, UNKNOWN)]
+            label = {
+                "non-compliant": "Non-compliant",
+                "unverified": "Could not fully verify",
+                "compliant-with-warnings": "Compliant, with warnings",
+            }[verdict]
             lines.append(f"\n**{label}**")
             for c in problems:
                 if c["remedy"]:
@@ -611,6 +781,11 @@ def main() -> int:
             continue
 
         if kind == "video":
+            if args.category:
+                # Categories are an image concept; saying nothing would let the user
+                # believe their override was applied to the video grading.
+                print(f"note: --category {args.category} does not apply to video "
+                      f"({target}); video limits are fixed", file=sys.stderr)
             checks, category = grade_video(info, thresholds), None
         else:
             category = args.category or infer_category(
@@ -626,6 +801,10 @@ def main() -> int:
         verdict = verdict_of(checks)
         if verdict == "non-compliant":
             worst = max(worst, 1)
+        elif verdict == "unverified":
+            # Exit 2 (same class as a failed probe): the tool could not answer, so a
+            # CI gate should stop rather than infer approval from silence.
+            worst = max(worst, 2)
         results.append({
             "asset": target, "kind": kind, "category": category,
             "probe": info, "checks": checks, "verdict": verdict,

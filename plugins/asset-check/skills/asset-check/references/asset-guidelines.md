@@ -3,11 +3,15 @@
 Standards for uploading and managing image and video assets across web and mobile
 platforms.
 
-This document is the **human-readable authority**. `thresholds.json` is the
-machine-readable copy the tooling enforces, and
-[`scripts/verify-guidelines.py`](../plugins/asset-check/skills/asset-check/scripts/verify-guidelines.py)
-asserts the two agree — so they cannot drift apart unnoticed. Edit this file first,
-then run the verifier and fix whatever it reports.
+This document is the **human-readable authority**. `thresholds.json`, beside it, is
+the machine-readable copy the tooling enforces, and
+[`../scripts/verify-guidelines.py`](../scripts/verify-guidelines.py) asserts the two
+agree — so they cannot drift apart unnoticed. Edit this file first, then run the
+verifier and fix whatever it reports.
+
+Both live inside the skill deliberately: files outside `plugins/asset-check/` are not
+packaged when the plugin is installed, so a copy at the repo root would be missing for
+everyone who installs it.
 
 ---
 
