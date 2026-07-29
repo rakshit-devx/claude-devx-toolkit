@@ -1,10 +1,16 @@
 <div align="center">
 
+<img src="docs/banner.jpg" width="100%" alt="claude-devx-toolkit — shared Claude Code
+plugins for the Foxtale team. Asset Check grades and optimises image and video assets
+against the team's guidelines, asking before it changes anything and never shifting
+colours. Examples show an oversized 3.2 MB hero banner reduced to 420 KB, a 24 MB 4K
+HDR video converted to a 2.1 MB 1080p SDR file, and a raster logo flagged as needing a
+vector source because it cannot be auto-fixed.">
+
 # claude-devx-toolkit
 
-**Shared [Claude Code](https://claude.com/claude-code) plugins for the Foxtale team.**
-
-Stop shipping 3 MB banners and videos that crash the app — installed with two commands.
+Shared [Claude Code](https://claude.com/claude-code) plugins for the Foxtale team —
+stop shipping 3 MB banners and videos that crash the app.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6C4CF1)](https://claude.com/claude-code)
 [![Requires ffmpeg](https://img.shields.io/badge/requires-ffmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
