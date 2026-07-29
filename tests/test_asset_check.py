@@ -30,6 +30,13 @@ SKILL = REPO / "plugins" / "asset-check" / "skills" / "asset-check"
 SCRIPTS = SKILL / "scripts"
 
 
+# Importing probe.py would otherwise drop a __pycache__ inside the plugin. That is
+# more than untidy: a local-path `claude plugin install` copies the working tree
+# rather than the git archive, so .gitignore does not apply and the bytecode ships to
+# whoever installs it. Keep the plugin directory clean of build artifacts entirely.
+sys.dont_write_bytecode = True
+
+
 def load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -106,6 +113,18 @@ class TestSkillInvocationPaths(unittest.TestCase):
 # --------------------------------------------------------------------------
 class TestGuidelinesArePackaged(unittest.TestCase):
     PLUGIN = REPO / "plugins" / "asset-check"
+
+    def test_no_build_artifacts_in_the_plugin_tree(self):
+        """A local-path install copies the working tree, so .gitignore does not
+        protect anyone — whatever is on disk ships. A stale __pycache__ reached a
+        real install this way."""
+        junk = [p for p in self.PLUGIN.rglob("*")
+                if p.name == "__pycache__" or p.suffix in (".pyc", ".pyo")
+                or p.name == ".DS_Store"]
+        self.assertEqual(
+            [str(p.relative_to(REPO)) for p in junk], [],
+            "build artifacts in the plugin directory would be packaged on install",
+        )
 
     def test_guidelines_doc_lives_inside_the_plugin(self):
         hits = list(self.PLUGIN.rglob("asset-guidelines.md"))
