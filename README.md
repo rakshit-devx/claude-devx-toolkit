@@ -175,7 +175,23 @@ python3 scripts/probe.py ~/Downloads/*.jpg ~/*.mp4     # mixed, in one pass
 python3 scripts/probe.py --category logo brand.png     # force a category
 python3 scripts/probe.py --json assets/*               # machine-readable
 python3 scripts/probe.py --list-categories
+python3 scripts/probe.py --progress assets/*             # a line per asset as it finishes
 ```
+
+`--progress` writes to stderr, one line per asset, so `--json` stdout stays clean:
+
+```
+[1/4] hero-banner.jpg — NON-COMPLIANT
+[2/4] good-720p.mp4 — compliant
+[3/4] ic-cart.svg — compliant
+[4/4] nope.jpg — probe failed
+```
+
+Discrete lines rather than a spinner on purpose: inside a Claude Code tool call neither
+stream is a TTY, so carriage-return animation is captured verbatim instead of rendered —
+every frame would collapse onto one unreadable line. In the terminal the moving
+indicator you see is Claude Code's own spinner, which the skill drives with task labels
+like *"Optimising promo-video.mp4 (3 of 5)"*.
 
 | Exit code | Meaning |
 |---|---|

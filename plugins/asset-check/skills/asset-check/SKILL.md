@@ -67,6 +67,7 @@ Useful flags:
 | `--list-categories` | Show the available image categories |
 | `--no-overrides` | Ignore user/project config and grade against team thresholds |
 | `--show-config` | Show which config layers are active and what they changed |
+| `--progress` | Emit one line per asset to stderr as it completes |
 
 Exit codes: `0` all compliant · `1` at least one non-compliant · `2` a probe failed **or
 a check could not be verified**. `1` outranks `2`, so a real failure is never hidden
@@ -85,6 +86,59 @@ behind an unreadable file in the same run.
   it is still a guess from a filename. When the category materially changes the
   verdict and the name is ambiguous, ask rather than assume — grading a thumbnail as
   a product image demands 1400 px of a 400 px file and produces a nonsense failure.
+
+---
+
+## Showing progress while you work
+
+Checking a handful of local files is instant and needs no ceremony. Probing remote URLs
+and re-encoding video are slow enough that silence looks like a hang, so show movement
+whenever the work will take more than a moment.
+
+**Use the task list — it drives the spinner the user actually sees.** Create a task and
+set `activeForm` to the present-continuous form; Claude Code animates that text while
+the task is `in_progress`:
+
+| Phase | `activeForm` |
+|---|---|
+| Probing | `Checking 12 assets` |
+| Encoding | `Optimising promo-video.mp4 (3 of 5)` |
+| Verifying | `Re-probing optimised assets` |
+
+Update it as you move between phases rather than leaving one stale label up.
+
+**Do not try to draw a spinner yourself.** Inside a tool call neither stdout nor stderr
+is a TTY — `isatty()` is false and `COLUMNS=0` — so carriage-return frames are never
+rendered. They are captured verbatim, and every frame lands on one unreadable line. A
+hand-rolled spinner makes the output worse, not livelier.
+
+**For long runs, background the work so progress streams.** `--progress` prints one line
+per asset as it finishes:
+
+```bash
+python3 "$SKILL/scripts/probe.py" --progress <assets>
+```
+```
+[1/4] hero-banner.jpg — NON-COMPLIANT
+[2/4] good-720p.mp4 — compliant
+[3/4] ic-cart.svg — compliant
+[4/4] nope.jpg — probe failed
+```
+
+Run it in the background for a large batch so those lines arrive as they happen rather
+than all at the end. Progress goes to stderr, so `--json` stdout stays machine-readable
+and the two compose.
+
+**For a slow encode, ffmpeg reports its own progress.** Write it to a file and watch
+that, rather than parsing ffmpeg's normal output:
+
+```bash
+ffmpeg -progress /tmp/ffmpeg-progress.txt -nostats -i in.mp4 ... out.mp4
+```
+
+It appends `frame=`, `out_time=` and `progress=continue` blocks while working, ending
+with `progress=end`; compare `out_time` against the source duration for a percentage.
+Worth it for a 4K re-encode, unnecessary for one image resize.
 
 ---
 

@@ -755,6 +755,65 @@ class TestCategoryFlagErrors(unittest.TestCase):
                          "replace the raw argparse error, don't just add to it")
 
 
+class TestProgressOutput(unittest.TestCase):
+    """--progress exists because a spinner cannot work here: inside a tool call
+    stdout/stderr are not TTYs, so carriage-return frames are captured rather than
+    rendered. Discrete lines stay readable and stream when backgrounded."""
+
+    def _assets(self, tmp: str) -> list:
+        root = Path(tmp)
+        (root / ".git").mkdir()
+        good = root / "product-thumb.jpg"
+        bad = root / "hero-banner.jpg"
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=400x400:d=1:r=1", "-frames:v", "1",
+               str(good))
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=2600x1000:d=1:r=1", "-frames:v", "1",
+               str(bad))
+        return [good, bad, root / "missing.jpg"]
+
+    def _run(self, *args, cwd):
+        return subprocess.run([sys.executable, str(SCRIPTS / "probe.py"), *args],
+                              capture_output=True, text=True, cwd=str(cwd),
+                              env=probe_env())
+
+    def test_one_line_per_asset_including_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = self._assets(tmp)
+            out = self._run("--progress", *[a.name for a in assets], cwd=tmp)
+        lines = [l for l in out.stderr.splitlines() if l.startswith("[")]
+        self.assertEqual(len(lines), 3,
+                         f"expected a line per asset, including the probe failure:\n"
+                         f"{out.stderr}")
+        self.assertTrue(lines[0].startswith("[1/3]"), lines[0])
+        self.assertTrue(lines[-1].startswith("[3/3]"), lines[-1])
+
+    def test_progress_does_not_corrupt_json_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = self._assets(tmp)
+            out = self._run("--progress", "--json", *[a.name for a in assets], cwd=tmp)
+        data = json.loads(out.stdout)   # would raise if progress leaked to stdout
+        self.assertEqual(len(data["results"]), 3)
+        self.assertIn("[1/3]", out.stderr)
+
+    def test_silent_without_the_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = self._assets(tmp)
+            out = self._run(*[a.name for a in assets], cwd=tmp)
+        self.assertNotIn("[1/3]", out.stderr,
+                         "progress must be opt-in; a default that always chatters "
+                         "becomes noise in the common single-asset case")
+
+    def test_no_carriage_returns_or_ansi_escapes(self):
+        """A spinner here would be captured, not rendered — so never emit one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = self._assets(tmp)
+            out = self._run("--progress", *[a.name for a in assets], cwd=tmp)
+        self.assertNotIn("\r", out.stderr,
+                         "carriage returns are captured verbatim and collapse every "
+                         "frame onto one unreadable line")
+        self.assertNotIn("\x1b[", out.stderr, "ANSI escapes are not rendered either")
+
+
 if __name__ == "__main__":
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is required to run these tests")

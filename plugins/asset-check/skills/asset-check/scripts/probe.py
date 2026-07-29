@@ -18,6 +18,7 @@ Usage
   --json          machine-readable output instead of the markdown table
   --no-overrides  ignore user/project config and grade against team thresholds
   --show-config   print the active config layers and what they changed
+  --progress      emit one line per asset to stderr as it completes
   --list-categories
 
 Exit codes
@@ -867,6 +868,35 @@ def grade_video(info: dict, thresholds: dict) -> list:
 # ---------------------------------------------------------------- output
 
 
+def make_progress(enabled: bool):
+    """One line per asset as it finishes, or a no-op.
+
+    Deliberately plain lines rather than a spinner. Inside a tool call neither
+    stdout nor stderr is a TTY, so carriage-return animation is not rendered — it is
+    captured verbatim, turning every frame into noise on a single line. Discrete
+    lines stay readable when captured and stream as events when the run is
+    backgrounded, which is when progress actually matters.
+
+    Written to stderr so `--json` stdout stays machine-readable.
+    """
+    if not enabled:
+        return lambda *_args, **_kw: None
+
+    labels = {
+        "compliant": "compliant",
+        "compliant-with-warnings": "compliant (warnings)",
+        "non-compliant": "NON-COMPLIANT",
+        "unverified": "UNVERIFIED",
+        "error": "probe failed",
+    }
+
+    def emit(index: int, total: int, target: str, verdict: str) -> None:
+        print(f"[{index}/{total}] {os.path.basename(target) or target} — "
+              f"{labels.get(verdict, verdict)}", file=sys.stderr, flush=True)
+
+    return emit
+
+
 def verdict_of(checks: list) -> str:
     if any(c["status"] == FAIL for c in checks):
         return "non-compliant"
@@ -954,6 +984,9 @@ def main() -> int:
                          "thresholds only (use this in CI)")
     ap.add_argument("--show-config", action="store_true",
                     help="print which config layers are active and what they changed")
+    ap.add_argument("--progress", action="store_true",
+                    help="emit one line per asset to stderr as it completes; useful "
+                         "for long batches and when run in the background")
     args = ap.parse_args()
 
     if args.show_config:
@@ -1006,12 +1039,14 @@ def main() -> int:
     # a real failure that happened to share a run with an unreadable file.
     results = []
     any_fail = any_unverified = any_error = False
+    progress = make_progress(args.progress)
     for target in args.assets:
         kind = kind_of(target)
         if kind == "unknown":
             results.append({"asset": target, "kind": "unknown",
                             "error": f"unrecognised extension '{ext_of(target) or 'none'}'"})
             any_error = True
+            progress(len(results), len(args.assets), target, "error")
             continue
 
         if kind == "svg":
@@ -1024,6 +1059,7 @@ def main() -> int:
         if info.get("_error"):
             results.append({"asset": target, "kind": kind, "error": info["_error"]})
             any_error = True
+            progress(len(results), len(args.assets), target, "error")
             continue
 
         if kind == "video":
@@ -1072,6 +1108,7 @@ def main() -> int:
             "asset": target, "kind": kind, "category": category,
             "probe": info, "checks": checks, "verdict": verdict,
         })
+        progress(len(results), len(args.assets), target, verdict)
 
     if args.as_json:
         print(json.dumps({
